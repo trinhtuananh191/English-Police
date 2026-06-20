@@ -1,17 +1,17 @@
 # English Buddy Bot
 
-Bot Discord tự động sửa ngữ pháp và gợi ý cách viết tự nhiên hơn, dùng OpenAI API (gpt-4o-mini).
+A Discord bot that automatically corrects grammar and suggests more natural phrasing, powered by the OpenAI API (gpt-4o-mini).
 
-## Cách hoạt động
-- Bot lắng nghe tin nhắn trong channel có tên `chat-en` (đổi tên channel này trong Discord, hoặc đổi biến `TARGET_CHANNEL_NAME` nếu muốn dùng tên khác).
-- Nếu câu đúng -> bot react ✅
-- Nếu câu có lỗi -> bot react ✏️ và tạo 1 thread riêng gắn vào tin nhắn đó, gửi bản sửa + gợi ý cách nói tự nhiên hơn + giải thích ngắn gọn.
+## How it works
+- The bot listens to messages in a channel named `chat-en` (rename this channel in Discord, or change the `TARGET_CHANNEL_NAME` variable if you want to use a different name).
+- If the sentence is correct -> the bot reacts with ✅
+- If the sentence has an error -> the bot reacts with ✏️ and creates a separate thread on that message, sending the correction + a more natural rewrite suggestion + a short explanation.
 
-## Environment Variables cần thiết (điền trên Railway)
-- `DISCORD_BOT_TOKEN` — token lấy từ Discord Developer Portal
-- `OPENAI_API_KEY` — key lấy từ platform.openai.com
-- `TARGET_CHANNEL_NAME` — (tùy chọn) tên channel bot sẽ hoạt động, mặc định là `chat-en`
+## Required Environment Variables (set these in Railway)
+- `DISCORD_BOT_TOKEN` — token from the Discord Developer Portal
+- `OPENAI_API_KEY` — key from platform.openai.com
+- `TARGET_CHANNEL_NAME` — (optional) the channel name the bot will operate in, defaults to `chat-en`
 
-## Quan trọng
-- Trong Discord server, tạo 1 channel tên đúng là `chat-en` (hoặc tên bạn đặt trong `TARGET_CHANNEL_NAME`).
-- Đảm bảo đã bật "Message Content Intent" trong Discord Developer Portal (mục Bot).
+## Important
+- In your Discord server, create a channel named exactly `chat-en` (or whatever name you set in `TARGET_CHANNEL_NAME`).
+- Make sure "Message Content Intent" is enabled in the Discord Developer Portal (under the Bot section).
