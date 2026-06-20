@@ -2,9 +2,18 @@
 
 A Discord bot that checks English grammar with OpenAI. The original automatic channel flow and `!strictness` command are retained. A `/check` fallback is also available without privileged Discord intents.
 
-## Default mode (recommended)
+## Automatic mode (default)
 
-The bot starts without privileged intents. In Discord, run:
+The bot automatically checks every message in `chat-en` (or the channel configured
+with `TARGET_CHANNEL_NAME`). No command is required.
+
+- Correct sentence → reacts with ✅
+- Sentence with an error → reacts with ✏️, creates a thread, and posts the correction there
+
+Automatic mode requires **Message Content Intent** in Discord Developer Portal →
+Bot → Privileged Gateway Intents.
+
+You can also check a sentence manually with:
 
 ```text
 /check text: I goes to school every day
@@ -20,9 +29,10 @@ Available slash commands:
 - `/help` — show usage and current automatic-mode status
 - `/strictness` — placeholder for the upcoming strictness setting
 
-## Optional automatic mode
+## Configuration
 
-Set `AUTO_CHECK_ENABLED=true` to listen automatically in `chat-en`. This mode requires **Message Content Intent** to be enabled in Discord Developer Portal → Bot → Privileged Gateway Intents.
+`AUTO_CHECK_ENABLED` defaults to `true`. Set it to `false` only if you want to
+disable automatic checking and use slash commands exclusively.
 
 - Correct sentence → reacts with ✅
 - Sentence with an error → reacts with ✏️ and creates a correction thread
@@ -39,7 +49,7 @@ The bot syncs slash commands globally and directly to every server it joins so t
 - `DISCORD_BOT_TOKEN` — required; token from Discord Developer Portal → Bot
 - `OPENAI_API_KEY` — required; OpenAI project API key
 - `TARGET_CHANNEL_NAME` — optional; defaults to `chat-en`
-- `AUTO_CHECK_ENABLED` — optional; defaults to `false`
+- `AUTO_CHECK_ENABLED` — optional; defaults to `true`
 
 After changing a variable, redeploy the Railway service. Do not add quotes or a `Bot ` prefix around the Discord token.
 

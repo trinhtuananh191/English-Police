@@ -27,7 +27,7 @@ def required_env(name: str) -> str:
 DISCORD_BOT_TOKEN = required_env("DISCORD_BOT_TOKEN")
 OPENAI_API_KEY = required_env("OPENAI_API_KEY")
 TARGET_CHANNEL_NAME = os.getenv("TARGET_CHANNEL_NAME", "chat-en").strip() or "chat-en"
-AUTO_CHECK_ENABLED = os.getenv("AUTO_CHECK_ENABLED", "false").lower() in {
+AUTO_CHECK_ENABLED = os.getenv("AUTO_CHECK_ENABLED", "true").lower() in {
     "1",
     "true",
     "yes",
@@ -39,8 +39,7 @@ MAX_INPUT_LENGTH = 2_000
 client_ai = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=30.0, max_retries=2)
 
 intents = discord.Intents.default()
-# Reading arbitrary message content is a privileged Discord intent. Keep it off by
-# default so the bot can always start; /check works without it.
+# Automatic grammar checking requires Discord's privileged Message Content Intent.
 intents.message_content = AUTO_CHECK_ENABLED
 
 
