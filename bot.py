@@ -12,6 +12,19 @@ TARGET_CHANNEL_NAME = os.getenv("TARGET_CHANNEL_NAME", "chat-en")
 # Số ký tự tối thiểu để bot check (tránh check mấy câu kiểu "ok", "lol")
 MIN_LENGTH = 6
 
+# ====== DEBUG: kiểm tra xem Railway có truyền đúng biến môi trường vào không ======
+print("---- DEBUG ENV CHECK ----")
+print(f"DISCORD_BOT_TOKEN tồn tại: {bool(DISCORD_BOT_TOKEN)}, độ dài: {len(DISCORD_BOT_TOKEN) if DISCORD_BOT_TOKEN else 0}")
+print(f"DISCORD_BOT_TOKEN bắt đầu bằng: {DISCORD_BOT_TOKEN[:7] if DISCORD_BOT_TOKEN else 'KHÔNG CÓ GIÁ TRỊ'}")
+print(f"DISCORD_BOT_TOKEN kết thúc bằng: {DISCORD_BOT_TOKEN[-5:] if DISCORD_BOT_TOKEN else 'KHÔNG CÓ GIÁ TRỊ'}")
+print(f"DISCORD_BOT_TOKEN có khoảng trắng/xuống dòng thừa: {DISCORD_BOT_TOKEN != DISCORD_BOT_TOKEN.strip() if DISCORD_BOT_TOKEN else 'N/A'}")
+print(f"DISCORD_BOT_TOKEN có đủ 2 dấu chấm (định dạng JWT-like hợp lệ): {DISCORD_BOT_TOKEN.count('.') == 2 if DISCORD_BOT_TOKEN else 'N/A'}")
+print("")
+print(f"OPENAI_API_KEY tồn tại: {bool(OPENAI_API_KEY)}, độ dài: {len(OPENAI_API_KEY) if OPENAI_API_KEY else 0}")
+print(f"OPENAI_API_KEY bắt đầu bằng: {OPENAI_API_KEY[:7] if OPENAI_API_KEY else 'KHÔNG CÓ GIÁ TRỊ'}")
+print(f"OPENAI_API_KEY có khoảng trắng/xuống dòng thừa: {OPENAI_API_KEY != OPENAI_API_KEY.strip() if OPENAI_API_KEY else 'N/A'}")
+print("--------------------------")
+
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
 
 intents = discord.Intents.default()
@@ -133,4 +146,10 @@ if __name__ == "__main__":
         raise ValueError("Thiếu DISCORD_BOT_TOKEN trong Environment Variables!")
     if not OPENAI_API_KEY:
         raise ValueError("Thiếu OPENAI_API_KEY trong Environment Variables!")
-    bot.run(DISCORD_BOT_TOKEN)
+    try:
+        bot.run(DISCORD_BOT_TOKEN)
+    except discord.errors.LoginFailure as e:
+        print(f"❌ LỖI LOGIN DISCORD: Token không hợp lệ. Chi tiết: {e}")
+    except Exception as e:
+        print(f"❌ LỖI KHÔNG XÁC ĐỊNH khi chạy bot: {e}")
+
