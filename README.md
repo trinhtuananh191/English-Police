@@ -1,17 +1,38 @@
 # English Buddy Bot
 
-A Discord bot that automatically corrects grammar and suggests more natural phrasing, powered by the OpenAI API (gpt-4o-mini).
+A Discord bot that checks English grammar with OpenAI. The original automatic channel flow and `!strictness` command are retained. A `/check` fallback is also available without privileged Discord intents.
 
-## How it works
-- The bot listens to messages in a channel named `chat-en` (rename this channel in Discord, or change the `TARGET_CHANNEL_NAME` variable if you want to use a different name).
-- If the sentence is correct -> the bot reacts with ✅
-- If the sentence has an error -> the bot reacts with ✏️ and creates a separate thread on that message, sending the correction + a more natural rewrite suggestion + a short explanation.
+## Default mode (recommended)
 
-## Required Environment Variables (set these in Railway)
-- `DISCORD_BOT_TOKEN` — token from the Discord Developer Portal
-- `OPENAI_API_KEY` — key from platform.openai.com
-- `TARGET_CHANNEL_NAME` — (optional) the channel name the bot will operate in, defaults to `chat-en`
+The bot starts without privileged intents. In Discord, run:
 
-## Important
-- In your Discord server, create a channel named exactly `chat-en` (or whatever name you set in `TARGET_CHANNEL_NAME`).
-- Make sure "Message Content Intent" is enabled in the Discord Developer Portal (under the Bot section).
+```text
+/check text: I goes to school every day
+```
+
+The result is sent privately to the person who used the command.
+
+## Optional automatic mode
+
+Set `AUTO_CHECK_ENABLED=true` to listen automatically in `chat-en`. This mode requires **Message Content Intent** to be enabled in Discord Developer Portal → Bot → Privileged Gateway Intents.
+
+- Correct sentence → reacts with ✅
+- Sentence with an error → reacts with ✏️ and creates a correction thread
+- The original `!strictness` placeholder command remains available
+
+If Discord reports `PrivilegedIntentsRequired`, remove `AUTO_CHECK_ENABLED` or set it to `false`, then redeploy. `/check` will continue to work.
+
+Discord requires Message Content Intent for both automatic message checking and prefix commands such as `!strictness`; this restriction cannot be bypassed in application code.
+
+## Railway environment variables
+
+- `DISCORD_BOT_TOKEN` — required; token from Discord Developer Portal → Bot
+- `OPENAI_API_KEY` — required; OpenAI project API key
+- `TARGET_CHANNEL_NAME` — optional; defaults to `chat-en`
+- `AUTO_CHECK_ENABLED` — optional; defaults to `false`
+
+After changing a variable, redeploy the Railway service. Do not add quotes or a `Bot ` prefix around the Discord token.
+
+## Discord installation permissions
+
+Install the application with the `bot` and `applications.commands` scopes. Automatic mode additionally needs permission to view the channel, read message history, add reactions, create public threads, and send messages in threads.
