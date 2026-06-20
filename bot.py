@@ -4,25 +4,25 @@ import discord
 from discord.ext import commands
 from openai import OpenAI
 
-# ====== CONFIG (lấy từ Environment Variables trên Railway) ======
+# ====== CONFIG (loaded from Environment Variables on Railway) ======
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-# Tên channel mà bot sẽ tự động check ngữ pháp. Đổi tên này nếu channel của bạn tên khác.
+# Name of the channel the bot will auto-check grammar in. Change this if your channel has a different name.
 TARGET_CHANNEL_NAME = os.getenv("TARGET_CHANNEL_NAME", "chat-en")
-# Số ký tự tối thiểu để bot check (tránh check mấy câu kiểu "ok", "lol")
+# Minimum message length to trigger a check (skips short messages like "ok", "lol")
 MIN_LENGTH = 6
 
-# ====== DEBUG: kiểm tra xem Railway có truyền đúng biến môi trường vào không ======
+# ====== DEBUG: check whether Railway is correctly passing the environment variables ======
 print("---- DEBUG ENV CHECK ----")
-print(f"DISCORD_BOT_TOKEN tồn tại: {bool(DISCORD_BOT_TOKEN)}, độ dài: {len(DISCORD_BOT_TOKEN) if DISCORD_BOT_TOKEN else 0}")
-print(f"DISCORD_BOT_TOKEN bắt đầu bằng: {DISCORD_BOT_TOKEN[:7] if DISCORD_BOT_TOKEN else 'KHÔNG CÓ GIÁ TRỊ'}")
-print(f"DISCORD_BOT_TOKEN kết thúc bằng: {DISCORD_BOT_TOKEN[-5:] if DISCORD_BOT_TOKEN else 'KHÔNG CÓ GIÁ TRỊ'}")
-print(f"DISCORD_BOT_TOKEN có khoảng trắng/xuống dòng thừa: {DISCORD_BOT_TOKEN != DISCORD_BOT_TOKEN.strip() if DISCORD_BOT_TOKEN else 'N/A'}")
-print(f"DISCORD_BOT_TOKEN có đủ 2 dấu chấm (định dạng JWT-like hợp lệ): {DISCORD_BOT_TOKEN.count('.') == 2 if DISCORD_BOT_TOKEN else 'N/A'}")
+print(f"DISCORD_BOT_TOKEN exists: {bool(DISCORD_BOT_TOKEN)}, length: {len(DISCORD_BOT_TOKEN) if DISCORD_BOT_TOKEN else 0}")
+print(f"DISCORD_BOT_TOKEN starts with: {DISCORD_BOT_TOKEN[:7] if DISCORD_BOT_TOKEN else 'NO VALUE'}")
+print(f"DISCORD_BOT_TOKEN ends with: {DISCORD_BOT_TOKEN[-5:] if DISCORD_BOT_TOKEN else 'NO VALUE'}")
+print(f"DISCORD_BOT_TOKEN has extra whitespace/newline: {DISCORD_BOT_TOKEN != DISCORD_BOT_TOKEN.strip() if DISCORD_BOT_TOKEN else 'N/A'}")
+print(f"DISCORD_BOT_TOKEN has exactly 2 dots (valid token-like format): {DISCORD_BOT_TOKEN.count('.') == 2 if DISCORD_BOT_TOKEN else 'N/A'}")
 print("")
-print(f"OPENAI_API_KEY tồn tại: {bool(OPENAI_API_KEY)}, độ dài: {len(OPENAI_API_KEY) if OPENAI_API_KEY else 0}")
-print(f"OPENAI_API_KEY bắt đầu bằng: {OPENAI_API_KEY[:7] if OPENAI_API_KEY else 'KHÔNG CÓ GIÁ TRỊ'}")
-print(f"OPENAI_API_KEY có khoảng trắng/xuống dòng thừa: {OPENAI_API_KEY != OPENAI_API_KEY.strip() if OPENAI_API_KEY else 'N/A'}")
+print(f"OPENAI_API_KEY exists: {bool(OPENAI_API_KEY)}, length: {len(OPENAI_API_KEY) if OPENAI_API_KEY else 0}")
+print(f"OPENAI_API_KEY starts with: {OPENAI_API_KEY[:7] if OPENAI_API_KEY else 'NO VALUE'}")
+print(f"OPENAI_API_KEY has extra whitespace/newline: {OPENAI_API_KEY != OPENAI_API_KEY.strip() if OPENAI_API_KEY else 'N/A'}")
 print("--------------------------")
 
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
@@ -55,7 +55,7 @@ Do not be overly strict about minor stylistic choices - focus on actual errors a
 
 
 async def check_grammar(text: str):
-    """Gọi OpenAI API để check grammar, trả về dict kết quả."""
+    """Call the OpenAI API to check grammar, return the result as a dict."""
     response = client_ai.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
@@ -74,23 +74,23 @@ async def check_grammar(text: str):
 
 @bot.event
 async def on_ready():
-    print(f"✅ Bot đã online: {bot.user}")
+    print(f"✅ Bot is online: {bot.user}")
 
 
 @bot.event
 async def on_message(message: discord.Message):
-    # Bỏ qua tin nhắn của chính bot
+    # Ignore the bot's own messages
     if message.author.bot:
         return
 
-    # Chỉ xử lý trong đúng channel mục tiêu
+    # Only process messages in the target channel
     if message.channel.name != TARGET_CHANNEL_NAME:
         await bot.process_commands(message)
         return
 
     text = message.content.strip()
 
-    # Bỏ qua tin nhắn quá ngắn hoặc chỉ có link/emoji
+    # Skip messages that are too short or just links/emoji
     if len(text) < MIN_LENGTH:
         await bot.process_commands(message)
         return
@@ -98,7 +98,7 @@ async def on_message(message: discord.Message):
     try:
         result = await check_grammar(text)
     except Exception as e:
-        print(f"Lỗi khi gọi OpenAI API: {e}")
+        print(f"Error calling OpenAI API: {e}")
         await bot.process_commands(message)
         return
 
@@ -107,49 +107,48 @@ async def on_message(message: discord.Message):
         return
 
     if not result.get("has_error"):
-        # Câu đúng -> react dấu tick cho gọn, không spam chat
+        # Sentence is correct -> react with a checkmark, no need to clutter the chat
         try:
             await message.add_reaction("✅")
         except Exception:
             pass
     else:
-        # Câu có lỗi -> tạo thread riêng để không làm loãng channel chính
+        # Sentence has an error -> create a separate thread to avoid cluttering the main channel
         try:
             await message.add_reaction("✏️")
             thread = await message.create_thread(
-                name=f"Sửa câu của {message.author.display_name}",
+                name=f"Correction for {message.author.display_name}",
                 auto_archive_duration=60,
             )
-            reply_lines = [f"**Câu gốc:** {text}"]
+            reply_lines = [f"**Original:** {text}"]
             if result.get("corrected"):
-                reply_lines.append(f"**Sửa lại:** {result['corrected']}")
+                reply_lines.append(f"**Corrected:** {result['corrected']}")
             if result.get("natural_rewrite") and result["natural_rewrite"] != result.get("corrected"):
-                reply_lines.append(f"**Cách nói tự nhiên hơn:** {result['natural_rewrite']}")
+                reply_lines.append(f"**More natural phrasing:** {result['natural_rewrite']}")
             if result.get("explanation"):
-                reply_lines.append(f"**Giải thích:** {result['explanation']}")
+                reply_lines.append(f"**Explanation:** {result['explanation']}")
 
             await thread.send("\n".join(reply_lines))
         except Exception as e:
-            print(f"Lỗi khi gửi correction: {e}")
+            print(f"Error sending correction: {e}")
 
     await bot.process_commands(message)
 
 
 @bot.command(name="strictness")
 async def strictness(ctx, level: str = None):
-    """Lệnh tạm thời - placeholder cho tính năng config độ khắt khe (Phase 2)."""
-    await ctx.send("Tính năng này sẽ được thêm ở phiên bản sau! 🚧")
+    """Placeholder command for the strictness-level config feature (Phase 2)."""
+    await ctx.send("This feature will be added in a future version! 🚧")
 
 
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN:
-        raise ValueError("Thiếu DISCORD_BOT_TOKEN trong Environment Variables!")
+        raise ValueError("Missing DISCORD_BOT_TOKEN in Environment Variables!")
     if not OPENAI_API_KEY:
-        raise ValueError("Thiếu OPENAI_API_KEY trong Environment Variables!")
+        raise ValueError("Missing OPENAI_API_KEY in Environment Variables!")
     try:
         bot.run(DISCORD_BOT_TOKEN)
     except discord.errors.LoginFailure as e:
-        print(f"❌ LỖI LOGIN DISCORD: Token không hợp lệ. Chi tiết: {e}")
+        print(f"❌ DISCORD LOGIN ERROR: Invalid token. Details: {e}")
     except Exception as e:
-        print(f"❌ LỖI KHÔNG XÁC ĐỊNH khi chạy bot: {e}")
-
+        print(f"❌ UNKNOWN ERROR while running the bot: {e}")
