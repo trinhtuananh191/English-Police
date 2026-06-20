@@ -153,34 +153,63 @@ async def on_ready() -> None:
 @bot.tree.command(name="check", description="Kiểm tra ngữ pháp một câu tiếng Anh")
 @app_commands.describe(text="Câu tiếng Anh cần kiểm tra")
 async def check_command(interaction: discord.Interaction, text: str) -> None:
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    # A public response can be used as the starter message for a correction
+    # thread. Ephemeral responses are visible only to the caller and cannot
+    # create threads.
+    await interaction.response.defer(thinking=True)
 
     clean_text = text.strip()
     if not clean_text:
-        await interaction.followup.send("Vui lòng nhập một câu tiếng Anh.", ephemeral=True)
+        await interaction.edit_original_response(
+            content="Vui lòng nhập một câu tiếng Anh."
+        )
         return
 
     try:
         result = await check_grammar(clean_text)
     except Exception:
         logger.exception("OpenAI request failed for /check")
-        await interaction.followup.send(
-            "Không thể kiểm tra lúc này. Vui lòng thử lại sau.", ephemeral=True
+        await interaction.edit_original_response(
+            content="Không thể kiểm tra lúc này. Vui lòng thử lại sau."
         )
         return
 
     if result is None:
-        await interaction.followup.send(
-            "Không đọc được kết quả từ AI. Vui lòng thử lại.", ephemeral=True
+        await interaction.edit_original_response(
+            content="Không đọc được kết quả từ AI. Vui lòng thử lại."
         )
     elif not result["has_error"]:
-        await interaction.followup.send("✅ Câu này đúng và tự nhiên!", ephemeral=True)
-    else:
-        await interaction.followup.send(
-            correction_text(clean_text, result),
-            ephemeral=True,
+        safe_text = discord.utils.escape_markdown(clean_text)
+        await interaction.edit_original_response(
+            content=f"✅ **Câu đúng và tự nhiên:** {safe_text}",
             allowed_mentions=discord.AllowedMentions.none(),
         )
+    else:
+        starter = await interaction.edit_original_response(
+            content=(
+                "✏️ **Câu cần chỉnh:** "
+                f"{discord.utils.escape_markdown(clean_text)}"
+            )[:2_000],
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        try:
+            thread = await starter.create_thread(
+                name=f"Sửa câu của {interaction.user.display_name}"[:100],
+                auto_archive_duration=60,
+            )
+            await thread.send(
+                correction_text(clean_text, result),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            logger.exception(
+                "Could not create correction thread for interaction %s",
+                interaction.id,
+            )
+            await interaction.edit_original_response(
+                content=correction_text(clean_text, result),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
 
 @bot.tree.command(name="strictness", description="Cấu hình độ khắt khe (sắp ra mắt)")

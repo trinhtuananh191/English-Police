@@ -10,7 +10,9 @@ The bot starts without privileged intents. In Discord, run:
 /check text: I goes to school every day
 ```
 
-The result is sent privately to the person who used the command.
+The result is public in the channel. Correct sentences receive a ✅ response;
+sentences with errors receive a ✏️ response and a correction thread. If the bot
+does not have permission to create a thread, it posts the correction directly.
 
 Available slash commands:
 
