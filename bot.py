@@ -47,10 +47,11 @@ intents.message_content = AUTO_CHECK_ENABLED
 class EnglishBuddy(commands.Bot):
     def __init__(self) -> None:
         super().__init__(command_prefix="!", intents=intents)
+        self.guild_commands_synced = False
 
     async def setup_hook(self) -> None:
-        commands = await self.tree.sync()
-        logger.info("Synced %s application command(s)", len(commands))
+        synced = await self.tree.sync()
+        logger.info("Synced %s global application command(s)", len(synced))
 
 
 bot = EnglishBuddy()
@@ -131,6 +132,23 @@ async def on_ready() -> None:
     mode = "automatic + /check" if AUTO_CHECK_ENABLED else "/check only"
     logger.info("Bot online as %s | mode=%s", bot.user, mode)
 
+    # Guild sync makes new slash commands appear immediately instead of waiting
+    # for Discord's global-command cache to refresh.
+    if not bot.guild_commands_synced:
+        for guild in bot.guilds:
+            try:
+                bot.tree.copy_global_to(guild=guild)
+                synced = await bot.tree.sync(guild=guild)
+                logger.info(
+                    "Synced %s application command(s) to guild %s (%s)",
+                    len(synced),
+                    guild.name,
+                    guild.id,
+                )
+            except discord.HTTPException:
+                logger.exception("Could not sync commands to guild %s", guild.id)
+        bot.guild_commands_synced = True
+
 
 @bot.tree.command(name="check", description="Kiểm tra ngữ pháp một câu tiếng Anh")
 @app_commands.describe(text="Câu tiếng Anh cần kiểm tra")
@@ -163,6 +181,25 @@ async def check_command(interaction: discord.Interaction, text: str) -> None:
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
+
+
+@bot.tree.command(name="strictness", description="Cấu hình độ khắt khe (sắp ra mắt)")
+async def strictness_slash(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(
+        "Tính năng này sẽ được thêm ở phiên bản sau! 🚧", ephemeral=True
+    )
+
+
+@bot.tree.command(name="help", description="Hiển thị hướng dẫn sử dụng bot")
+async def help_slash(interaction: discord.Interaction) -> None:
+    auto_status = "đang bật" if AUTO_CHECK_ENABLED else "đang tắt"
+    await interaction.response.send_message(
+        "**English Buddy**\n"
+        "`/check text: ...` — kiểm tra một câu tiếng Anh\n"
+        "`/strictness` — cấu hình độ khắt khe (sắp ra mắt)\n"
+        f"Tự động kiểm tra trong `#{TARGET_CHANNEL_NAME}`: **{auto_status}**",
+        ephemeral=True,
+    )
 
 
 @bot.event

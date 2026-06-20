@@ -12,6 +12,12 @@ The bot starts without privileged intents. In Discord, run:
 
 The result is sent privately to the person who used the command.
 
+Available slash commands:
+
+- `/check text: ...` — check an English sentence
+- `/help` — show usage and current automatic-mode status
+- `/strictness` — placeholder for the upcoming strictness setting
+
 ## Optional automatic mode
 
 Set `AUTO_CHECK_ENABLED=true` to listen automatically in `chat-en`. This mode requires **Message Content Intent** to be enabled in Discord Developer Portal → Bot → Privileged Gateway Intents.
@@ -23,6 +29,8 @@ Set `AUTO_CHECK_ENABLED=true` to listen automatically in `chat-en`. This mode re
 If Discord reports `PrivilegedIntentsRequired`, remove `AUTO_CHECK_ENABLED` or set it to `false`, then redeploy. `/check` will continue to work.
 
 Discord requires Message Content Intent for both automatic message checking and prefix commands such as `!strictness`; this restriction cannot be bypassed in application code.
+
+The bot syncs slash commands globally and directly to every server it joins so they appear immediately. If slash commands are still missing, reinstall the application with both `bot` and `applications.commands` OAuth2 scopes.
 
 ## Railway environment variables
 
