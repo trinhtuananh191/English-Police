@@ -1,4 +1,4 @@
-# English Buddy Bot (v2)
+# English Police Bot (v2)
 
 A Discord bot that automatically corrects grammar, suggests natural rewrites, tracks vocabulary, and reports daily progress — powered by OpenAI (gpt-4o-mini). Built to respect casual/Gen-Z writing style: slang, abbreviations, and lowercase texting are NOT flagged as errors. Only real grammar mistakes are.
 
