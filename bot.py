@@ -15,8 +15,8 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TARGET_CHANNEL_NAME = os.getenv("TARGET_CHANNEL_NAME", "chat-en")
 REPORT_CHANNEL_NAME = os.getenv("REPORT_CHANNEL_NAME", "daily-report")
-# Hour (24h, server/UTC time) to send the daily report. Default 15:00 UTC = 22:00 ICT (Vietnam time).
-REPORT_HOUR_UTC = int(os.getenv("REPORT_HOUR_UTC", "15"))
+# Hour (24h, server/UTC time) to send the daily report. Default 16:00 UTC = 23:00 ICT (Vietnam time).
+REPORT_HOUR_UTC = int(os.getenv("REPORT_HOUR_UTC", "16"))
 MIN_LENGTH = 6
 
 if not DISCORD_BOT_TOKEN:

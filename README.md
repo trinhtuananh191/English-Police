@@ -20,7 +20,7 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 - `DATABASE_URL` — automatically provided by Railway once you attach a PostgreSQL database to the project (no manual setup needed)
 - `TARGET_CHANNEL_NAME` — (optional) channel the bot checks grammar in, default `chat-en`
 - `REPORT_CHANNEL_NAME` — (optional) channel for daily reports, default `daily-report`
-- `REPORT_HOUR_UTC` — (optional) UTC hour (0-23) to send the daily report, default `15` (which is 22:00 / 10 PM Vietnam time)
+- `REPORT_HOUR_UTC` — (optional) UTC hour (0-23) to send the daily report, default `16` (which is 23:00 / 11 PM Vietnam time)
 
 ## Setup notes
 1. In your Discord server, create two channels: `chat-en` (or your custom name) and `daily-report`.
