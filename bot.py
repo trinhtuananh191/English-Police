@@ -1,297 +1,217 @@
-import json
-import logging
 import os
-from typing import Any
+import asyncio
+from datetime import datetime, date, time as dtime, timezone, timedelta
 
 import discord
-from discord import app_commands
-from discord.ext import commands
-from openai import AsyncOpenAI
+from discord.ext import commands, tasks
+from openai import OpenAI
 
+import database as db
+from grammar import check_grammar
+from cefr import estimate_cefr_level
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
-logger = logging.getLogger("english-buddy")
-
-
-def required_env(name: str) -> str:
-    """Read a required environment variable without ever logging its value."""
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
-
-
-DISCORD_BOT_TOKEN = required_env("DISCORD_BOT_TOKEN")
-OPENAI_API_KEY = required_env("OPENAI_API_KEY")
-TARGET_CHANNEL_NAME = os.getenv("TARGET_CHANNEL_NAME", "chat-en").strip() or "chat-en"
-AUTO_CHECK_ENABLED = os.getenv("AUTO_CHECK_ENABLED", "true").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+# ====== CONFIG ======
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+TARGET_CHANNEL_NAME = os.getenv("TARGET_CHANNEL_NAME", "chat-en")
+REPORT_CHANNEL_NAME = os.getenv("REPORT_CHANNEL_NAME", "daily-report")
+# Hour (24h, server/UTC time) to send the daily report. Default 15:00 UTC = 22:00 ICT (Vietnam time).
+REPORT_HOUR_UTC = int(os.getenv("REPORT_HOUR_UTC", "15"))
 MIN_LENGTH = 6
-MAX_INPUT_LENGTH = 2_000
 
-client_ai = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=30.0, max_retries=2)
+if not DISCORD_BOT_TOKEN:
+    raise ValueError("Missing DISCORD_BOT_TOKEN in Environment Variables!")
+if not OPENAI_API_KEY:
+    raise ValueError("Missing OPENAI_API_KEY in Environment Variables!")
+
+client_ai = OpenAI(api_key=OPENAI_API_KEY)
 
 intents = discord.Intents.default()
-# Automatic grammar checking requires Discord's privileged Message Content Intent.
-intents.message_content = AUTO_CHECK_ENABLED
+intents.message_content = True
+intents.messages = True
 
-
-class EnglishBuddy(commands.Bot):
-    def __init__(self) -> None:
-        super().__init__(command_prefix="!", intents=intents)
-        self.guild_commands_synced = False
-
-    async def setup_hook(self) -> None:
-        synced = await self.tree.sync()
-        logger.info("Synced %s global application command(s)", len(synced))
-
-
-bot = EnglishBuddy()
-
-SYSTEM_PROMPT = """You are a friendly, encouraging English teacher helping intermediate learners improve their English through daily chat messages.
-
-Given a message written by a student, do the following:
-1. Decide if the sentence has any grammar, spelling, or word-choice errors.
-2. If it does, provide a corrected version.
-3. Suggest a more natural / native-like way to phrase it, if different from the correction.
-4. Give a short, friendly explanation (1-2 sentences max) of the main issue, in simple English.
-
-Respond ONLY in this exact JSON format, with no extra text, no markdown fences:
-{
-  "has_error": true or false,
-  "corrected": "corrected sentence here (empty string if no error)",
-  "natural_rewrite": "more natural phrasing here (empty string if same as corrected or no improvement)",
-  "explanation": "short friendly explanation here (empty string if no error)"
-}
-
-If the message is already correct and natural, set has_error to false and leave the other fields empty.
-Do not be overly strict about minor stylistic choices - focus on actual errors and genuinely awkward phrasing.
-"""
-
-
-def valid_result(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict) or not isinstance(value.get("has_error"), bool):
-        return None
-
-    for field in ("corrected", "natural_rewrite", "explanation"):
-        if not isinstance(value.get(field), str):
-            return None
-
-    return value
-
-
-async def check_grammar(text: str) -> dict[str, Any] | None:
-    response = await client_ai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": text[:MAX_INPUT_LENGTH]},
-        ],
-        temperature=0.3,
-        response_format={"type": "json_object"},
-    )
-    content = response.choices[0].message.content
-    if not content:
-        return None
-
-    try:
-        return valid_result(json.loads(content))
-    except json.JSONDecodeError:
-        return None
-
-
-def correction_text(original: str, result: dict[str, Any]) -> str:
-    original = discord.utils.escape_markdown(original)
-    lines = [f"**Câu gốc:** {original}"]
-
-    if result["corrected"]:
-        lines.append(f"**Sửa lại:** {discord.utils.escape_markdown(result['corrected'])}")
-    if result["natural_rewrite"] and result["natural_rewrite"] != result["corrected"]:
-        lines.append(
-            "**Cách nói tự nhiên hơn:** "
-            f"{discord.utils.escape_markdown(result['natural_rewrite'])}"
-        )
-    if result["explanation"]:
-        lines.append(
-            f"**Giải thích:** {discord.utils.escape_markdown(result['explanation'])}"
-        )
-
-    return "\n".join(lines)[:2_000]
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 @bot.event
-async def on_ready() -> None:
-    mode = "automatic + /check" if AUTO_CHECK_ENABLED else "/check only"
-    logger.info("Bot online as %s | mode=%s", bot.user, mode)
-
-    # Guild sync makes new slash commands appear immediately instead of waiting
-    # for Discord's global-command cache to refresh.
-    if not bot.guild_commands_synced:
-        for guild in bot.guilds:
-            try:
-                bot.tree.copy_global_to(guild=guild)
-                synced = await bot.tree.sync(guild=guild)
-                logger.info(
-                    "Synced %s application command(s) to guild %s (%s)",
-                    len(synced),
-                    guild.name,
-                    guild.id,
-                )
-            except discord.HTTPException:
-                logger.exception("Could not sync commands to guild %s", guild.id)
-        bot.guild_commands_synced = True
-
-
-@bot.tree.command(name="check", description="Kiểm tra ngữ pháp một câu tiếng Anh")
-@app_commands.describe(text="Câu tiếng Anh cần kiểm tra")
-async def check_command(interaction: discord.Interaction, text: str) -> None:
-    # A public response can be used as the starter message for a correction
-    # thread. Ephemeral responses are visible only to the caller and cannot
-    # create threads.
-    await interaction.response.defer(thinking=True)
-
-    clean_text = text.strip()
-    if not clean_text:
-        await interaction.edit_original_response(
-            content="Vui lòng nhập một câu tiếng Anh."
-        )
-        return
-
-    try:
-        result = await check_grammar(clean_text)
-    except Exception:
-        logger.exception("OpenAI request failed for /check")
-        await interaction.edit_original_response(
-            content="Không thể kiểm tra lúc này. Vui lòng thử lại sau."
-        )
-        return
-
-    if result is None:
-        await interaction.edit_original_response(
-            content="Không đọc được kết quả từ AI. Vui lòng thử lại."
-        )
-    elif not result["has_error"]:
-        safe_text = discord.utils.escape_markdown(clean_text)
-        await interaction.edit_original_response(
-            content=f"✅ **Câu đúng và tự nhiên:** {safe_text}",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-    else:
-        starter = await interaction.edit_original_response(
-            content=(
-                "✏️ **Câu cần chỉnh:** "
-                f"{discord.utils.escape_markdown(clean_text)}"
-            )[:2_000],
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        try:
-            thread = await starter.create_thread(
-                name=f"Sửa câu của {interaction.user.display_name}"[:100],
-                auto_archive_duration=60,
-            )
-            await thread.send(
-                correction_text(clean_text, result),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.HTTPException:
-            logger.exception(
-                "Could not create correction thread for interaction %s",
-                interaction.id,
-            )
-            await interaction.edit_original_response(
-                content=correction_text(clean_text, result),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-
-
-@bot.tree.command(name="strictness", description="Cấu hình độ khắt khe (sắp ra mắt)")
-async def strictness_slash(interaction: discord.Interaction) -> None:
-    await interaction.response.send_message(
-        "Tính năng này sẽ được thêm ở phiên bản sau! 🚧", ephemeral=True
-    )
-
-
-@bot.tree.command(name="help", description="Hiển thị hướng dẫn sử dụng bot")
-async def help_slash(interaction: discord.Interaction) -> None:
-    auto_status = "đang bật" if AUTO_CHECK_ENABLED else "đang tắt"
-    await interaction.response.send_message(
-        "**English Buddy**\n"
-        "`/check text: ...` — kiểm tra một câu tiếng Anh\n"
-        "`/strictness` — cấu hình độ khắt khe (sắp ra mắt)\n"
-        f"Tự động kiểm tra trong `#{TARGET_CHANNEL_NAME}`: **{auto_status}**",
-        ephemeral=True,
-    )
+async def on_ready():
+    print(f"✅ Bot is online: {bot.user}")
+    db.init_db()
+    if not daily_report_task.is_running():
+        daily_report_task.start()
 
 
 @bot.event
-async def on_message(message: discord.Message) -> None:
+async def on_message(message: discord.Message):
     if message.author.bot:
         return
-    if not AUTO_CHECK_ENABLED:
-        await bot.process_commands(message)
-        return
-    if getattr(message.channel, "name", None) != TARGET_CHANNEL_NAME:
+
+    if message.channel.name != TARGET_CHANNEL_NAME:
         await bot.process_commands(message)
         return
 
     text = message.content.strip()
+
     if len(text) < MIN_LENGTH:
         await bot.process_commands(message)
         return
 
     try:
-        result = await check_grammar(text)
-    except Exception:
-        logger.exception("OpenAI request failed for message %s", message.id)
+        result = check_grammar(client_ai, text)
+    except Exception as e:
+        print(f"Error calling OpenAI API: {e}")
         await bot.process_commands(message)
         return
 
     if result is None:
-        logger.warning("Invalid AI result for message %s", message.id)
         await bot.process_commands(message)
         return
 
-    if not result["has_error"]:
+    discord_id = str(message.author.id)
+    username = message.author.display_name
+    has_error = bool(result.get("has_error"))
+    new_vocab = result.get("new_vocab") or []
+
+    # Save to DB (best-effort — don't crash the bot if DB has an issue)
+    try:
+        db.log_message(
+            discord_id=discord_id,
+            username=username,
+            channel_id=str(message.channel.id),
+            original_text=text,
+            corrected_text=result.get("corrected", ""),
+            natural_rewrite=result.get("natural_rewrite", ""),
+            has_error=has_error,
+            error_types=result.get("error_types", []),
+        )
+        for v in new_vocab:
+            db.save_vocab(
+                discord_id=discord_id,
+                username=username,
+                word_or_phrase=v.get("word", ""),
+                meaning=v.get("meaning", ""),
+                example_sentence=v.get("example", ""),
+            )
+        db.upsert_daily_stat(
+            discord_id=discord_id,
+            username=username,
+            stat_date=date.today(),
+            has_error=has_error,
+            new_vocab_count=len(new_vocab),
+        )
+    except Exception as e:
+        print(f"Database error: {e}")
+
+    if not has_error:
         try:
             await message.add_reaction("✅")
-        except discord.HTTPException:
-            logger.exception("Could not add reaction to message %s", message.id)
-        await bot.process_commands(message)
-        return
+        except Exception:
+            pass
+    else:
+        try:
+            await message.add_reaction("✏️")
+            thread = await message.create_thread(
+                name=f"Correction for {username}",
+                auto_archive_duration=60,
+            )
+            reply_lines = [f"**Original:** {text}"]
+            if result.get("corrected"):
+                reply_lines.append(f"**Corrected:** {result['corrected']}")
+            if result.get("natural_rewrite") and result["natural_rewrite"] != result.get("corrected"):
+                reply_lines.append(f"**More natural:** {result['natural_rewrite']}")
+            if result.get("explanation"):
+                reply_lines.append(f"**Why:** {result['explanation']}")
+            if new_vocab:
+                vocab_lines = "\n".join(
+                    f"  • **{v.get('word')}** — {v.get('meaning')}" for v in new_vocab
+                )
+                reply_lines.append(f"**New vocab spotted:**\n{vocab_lines}")
 
-    try:
-        await message.add_reaction("✏️")
-        thread = await message.create_thread(
-            name=f"Sửa câu của {message.author.display_name}"[:100],
-            auto_archive_duration=60,
-        )
-        await thread.send(
-            correction_text(text, result),
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-    except discord.HTTPException:
-        logger.exception("Could not send correction for message %s", message.id)
+            await thread.send("\n".join(reply_lines))
+        except Exception as e:
+            print(f"Error sending correction: {e}")
 
     await bot.process_commands(message)
 
 
-@bot.command(name="strictness")
-async def strictness(ctx: commands.Context, level: str | None = None) -> None:
-    """Placeholder retained from the original bot for Phase 2."""
-    await ctx.send("Tính năng này sẽ được thêm ở phiên bản sau! 🚧")
+# ====== Daily report (scheduled task) ======
+
+@tasks.loop(minutes=1)
+async def daily_report_task():
+    """Runs every minute, fires the report once when the clock hits REPORT_HOUR_UTC:00."""
+    now = datetime.now(timezone.utc)
+    if now.hour == REPORT_HOUR_UTC and now.minute == 0:
+        await send_daily_report()
+
+
+async def send_daily_report():
+    report_channel = discord.utils.get(
+        [ch for guild in bot.guilds for ch in guild.text_channels],
+        name=REPORT_CHANNEL_NAME,
+    )
+    if report_channel is None:
+        print(f"⚠️ Report channel '#{REPORT_CHANNEL_NAME}' not found. Skipping report.")
+        return
+
+    today = date.today()
+    stats = db.get_daily_stats(today)
+
+    if not stats:
+        await report_channel.send(f"📊 **Daily Report — {today.isoformat()}**\nNo activity today. Let's chat more tomorrow! 💬")
+        return
+
+    lines = [f"📊 **Daily Report — {today.isoformat()}**\n"]
+    for row in stats:
+        username = row["username"]
+        total = row["total_messages"]
+        errors = row["messages_with_errors"]
+        vocab = row["new_vocab_count"]
+        accuracy = round(((total - errors) / total) * 100) if total else 100
+
+        lines.append(
+            f"**{username}** — {total} messages, {errors} with errors "
+            f"({accuracy}% clean), {vocab} new word(s) learned"
+        )
+
+    await report_channel.send("\n".join(lines))
+
+    # Update CEFR estimate for each active user
+    for row in stats:
+        discord_id = row["discord_id"]
+        username = row["username"]
+        try:
+            recent = db.get_recent_messages(discord_id, limit=30)
+            cefr_result = estimate_cefr_level(client_ai, recent)
+            if cefr_result:
+                db.save_cefr_estimate(discord_id, username, cefr_result["level"])
+        except Exception as e:
+            print(f"CEFR estimation error for {username}: {e}")
+
+
+# ====== Commands ======
+
+@bot.command(name="level")
+async def level_cmd(ctx):
+    """Show the user's latest estimated CEFR level."""
+    discord_id = str(ctx.author.id)
+    row = db.get_latest_cefr(discord_id)
+    if row is None:
+        await ctx.send("No level estimate yet — keep chatting and check back after today's report! 📈")
+    else:
+        await ctx.send(f"📈 Your latest estimated level: **{row['estimated_level']}**")
+
+
+@bot.command(name="report")
+async def report_cmd(ctx):
+    """Manually trigger today's report (for testing)."""
+    await send_daily_report()
+    await ctx.send("Report sent! ✅")
 
 
 if __name__ == "__main__":
-    logger.info(
-        "Starting English Buddy | auto_check=%s | target_channel=%s",
-        AUTO_CHECK_ENABLED,
-        TARGET_CHANNEL_NAME,
-    )
-    bot.run(DISCORD_BOT_TOKEN, log_handler=None)
+    try:
+        bot.run(DISCORD_BOT_TOKEN)
+    except discord.errors.LoginFailure as e:
+        print(f"❌ DISCORD LOGIN ERROR: Invalid token. Details: {e}")
+    except Exception as e:
+        print(f"❌ UNKNOWN ERROR while running the bot: {e}")
