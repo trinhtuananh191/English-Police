@@ -1,6 +1,5 @@
 import os
-import asyncio
-from datetime import datetime, date, time as dtime, timezone, timedelta
+from datetime import datetime, date, timezone
 
 import discord
 from discord.ext import commands, tasks
@@ -9,14 +8,15 @@ from openai import OpenAI
 import database as db
 from grammar import check_grammar
 from cefr import estimate_cefr_level
+from vocab_scheduler import send_word_batch, SEND_HOURS_UTC
 
 # ====== CONFIG ======
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TARGET_CHANNEL_NAME = os.getenv("TARGET_CHANNEL_NAME", "chat-en")
 REPORT_CHANNEL_NAME = os.getenv("REPORT_CHANNEL_NAME", "daily-report")
-# Hour (24h, server/UTC time) to send the daily report. Default 16:00 UTC = 23:00 ICT (Vietnam time).
-REPORT_HOUR_UTC = int(os.getenv("REPORT_HOUR_UTC", "16"))
+VOCAB_CHANNEL_NAME = os.getenv("VOCAB_CHANNEL_NAME", "vocab-drop")
+REPORT_HOUR_UTC = int(os.getenv("REPORT_HOUR_UTC", "15"))  # 22:00 ICT
 MIN_LENGTH = 6
 
 if not DISCORD_BOT_TOKEN:
@@ -33,13 +33,37 @@ intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
+# ────────────────────────────────────────────
+# STARTUP
+# ────────────────────────────────────────────
+
 @bot.event
 async def on_ready():
     print(f"✅ Bot is online: {bot.user}")
     db.init_db()
-    if not daily_report_task.is_running():
-        daily_report_task.start()
+    if not clock_task.is_running():
+        clock_task.start()
 
+
+# ────────────────────────────────────────────
+# MASTER CLOCK
+# ────────────────────────────────────────────
+
+@tasks.loop(minutes=1)
+async def clock_task():
+    now = datetime.now(timezone.utc)
+    h, m = now.hour, now.minute
+
+    if h in SEND_HOURS_UTC and m == 0:
+        await send_word_batch(bot, client_ai, VOCAB_CHANNEL_NAME)
+
+    if h == REPORT_HOUR_UTC and m == 0:
+        await send_daily_report()
+
+
+# ────────────────────────────────────────────
+# GRAMMAR CHECK
+# ────────────────────────────────────────────
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -51,7 +75,6 @@ async def on_message(message: discord.Message):
         return
 
     text = message.content.strip()
-
     if len(text) < MIN_LENGTH:
         await bot.process_commands(message)
         return
@@ -71,8 +94,8 @@ async def on_message(message: discord.Message):
     username = message.author.display_name
     has_error = bool(result.get("has_error"))
     new_vocab = result.get("new_vocab") or []
+    formality_score = result.get("formality_score")
 
-    # Save to DB (best-effort — don't crash the bot if DB has an issue)
     try:
         db.log_message(
             discord_id=discord_id,
@@ -83,6 +106,7 @@ async def on_message(message: discord.Message):
             natural_rewrite=result.get("natural_rewrite", ""),
             has_error=has_error,
             error_types=result.get("error_types", []),
+            formality_score=formality_score,
         )
         for v in new_vocab:
             db.save_vocab(
@@ -98,6 +122,7 @@ async def on_message(message: discord.Message):
             stat_date=date.today(),
             has_error=has_error,
             new_vocab_count=len(new_vocab),
+            formality_score=formality_score,
         )
     except Exception as e:
         print(f"Database error: {e}")
@@ -134,14 +159,21 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
-# ====== Daily report (scheduled task) ======
+# ────────────────────────────────────────────
+# DAILY REPORT
+# ────────────────────────────────────────────
 
-@tasks.loop(minutes=1)
-async def daily_report_task():
-    """Runs every minute, fires the report once when the clock hits REPORT_HOUR_UTC:00."""
-    now = datetime.now(timezone.utc)
-    if now.hour == REPORT_HOUR_UTC and now.minute == 0:
-        await send_daily_report()
+def formality_label(score):
+    """Convert a 0.0-1.0 score to a human-readable label."""
+    if score is None:
+        return "N/A"
+    if score < 0.25:
+        return f"{round(score * 100)}% — very casual 🤙"
+    if score < 0.5:
+        return f"{round(score * 100)}% — casual 😊"
+    if score < 0.75:
+        return f"{round(score * 100)}% — neutral 📝"
+    return f"{round(score * 100)}% — formal 🎩"
 
 
 async def send_daily_report():
@@ -150,32 +182,40 @@ async def send_daily_report():
         name=REPORT_CHANNEL_NAME,
     )
     if report_channel is None:
-        print(f"⚠️ Report channel '#{REPORT_CHANNEL_NAME}' not found. Skipping report.")
+        print(f"⚠️ Report channel '#{REPORT_CHANNEL_NAME}' not found.")
         return
 
     today = date.today()
     stats = db.get_daily_stats(today)
 
     if not stats:
-        await report_channel.send(f"📊 **Daily Report — {today.isoformat()}**\nNo activity today. Let's chat more tomorrow! 💬")
+        await report_channel.send(
+            f"📊 **Daily Report — {today.isoformat()}**\n"
+            f"No activity today. Let's chat more tomorrow! 💬"
+        )
         return
 
     lines = [f"📊 **Daily Report — {today.isoformat()}**\n"]
+
     for row in stats:
         username = row["username"]
         total = row["total_messages"]
+        correct = row["messages_correct"]
         errors = row["messages_with_errors"]
         vocab = row["new_vocab_count"]
-        accuracy = round(((total - errors) / total) * 100) if total else 100
+        avg_formality = row.get("avg_formality_score")
 
         lines.append(
-            f"**{username}** — {total} messages, {errors} with errors "
-            f"({accuracy}% clean), {vocab} new word(s) learned"
+            f"**{username}**\n"
+            f"  ✅ Correct sentences: **{correct}**\n"
+            f"  ✏️ Incorrect sentences: **{errors}**\n"
+            f"  📖 New vocab spotted: **{vocab}** word(s)\n"
+            f"  🎭 Writing style: **{formality_label(avg_formality)}**\n"
         )
 
     await report_channel.send("\n".join(lines))
 
-    # Update CEFR estimate for each active user
+    # CEFR update
     for row in stats:
         discord_id = row["discord_id"]
         username = row["username"]
@@ -184,17 +224,21 @@ async def send_daily_report():
             cefr_result = estimate_cefr_level(client_ai, recent)
             if cefr_result:
                 db.save_cefr_estimate(discord_id, username, cefr_result["level"])
+                await report_channel.send(
+                    f"📈 **{username}** estimated level: **{cefr_result['level']}** — {cefr_result['summary']}"
+                )
         except Exception as e:
             print(f"CEFR estimation error for {username}: {e}")
 
 
-# ====== Commands ======
+# ────────────────────────────────────────────
+# COMMANDS
+# ────────────────────────────────────────────
 
 @bot.command(name="level")
 async def level_cmd(ctx):
-    """Show the user's latest estimated CEFR level."""
-    discord_id = str(ctx.author.id)
-    row = db.get_latest_cefr(discord_id)
+    """Show your latest estimated CEFR level."""
+    row = db.get_latest_cefr(str(ctx.author.id))
     if row is None:
         await ctx.send("No level estimate yet — keep chatting and check back after today's report! 📈")
     else:
@@ -203,15 +247,26 @@ async def level_cmd(ctx):
 
 @bot.command(name="report")
 async def report_cmd(ctx):
-    """Manually trigger today's report (for testing)."""
+    """Manually trigger today's daily report (for testing)."""
     await send_daily_report()
     await ctx.send("Report sent! ✅")
 
+
+@bot.command(name="vocab")
+async def vocab_cmd(ctx):
+    """Manually trigger the next vocab drop (for testing)."""
+    await send_word_batch(bot, client_ai, VOCAB_CHANNEL_NAME)
+    await ctx.send("Vocab drop sent! 📚")
+
+
+# ────────────────────────────────────────────
+# RUN
+# ────────────────────────────────────────────
 
 if __name__ == "__main__":
     try:
         bot.run(DISCORD_BOT_TOKEN)
     except discord.errors.LoginFailure as e:
-        print(f"❌ DISCORD LOGIN ERROR: Invalid token. Details: {e}")
+        print(f"❌ DISCORD LOGIN ERROR: {e}")
     except Exception as e:
-        print(f"❌ UNKNOWN ERROR while running the bot: {e}")
+        print(f"❌ UNKNOWN ERROR: {e}")

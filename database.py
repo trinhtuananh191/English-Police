@@ -14,7 +14,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 def get_connection():
-    """Open a new connection to the Postgres database."""
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 
@@ -34,6 +33,7 @@ def init_db():
             natural_rewrite TEXT,
             has_error BOOLEAN,
             error_types TEXT,
+            formality_score REAL DEFAULT NULL,
             created_at TIMESTAMP DEFAULT NOW()
         );
     """)
@@ -57,8 +57,10 @@ def init_db():
             username TEXT,
             stat_date DATE NOT NULL,
             total_messages INTEGER DEFAULT 0,
+            messages_correct INTEGER DEFAULT 0,
             messages_with_errors INTEGER DEFAULT 0,
             new_vocab_count INTEGER DEFAULT 0,
+            avg_formality_score REAL DEFAULT NULL,
             UNIQUE(discord_id, stat_date)
         );
     """)
@@ -73,6 +75,19 @@ def init_db():
         );
     """)
 
+    # Track all AI-generated vocab words so they are never repeated
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS generated_vocab (
+            id SERIAL PRIMARY KEY,
+            word TEXT NOT NULL UNIQUE,
+            topic TEXT,
+            word_type TEXT,
+            meaning TEXT,
+            generated_on DATE NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
@@ -80,16 +95,16 @@ def init_db():
 
 
 def log_message(discord_id, username, channel_id, original_text, corrected_text,
-                 natural_rewrite, has_error, error_types):
+                natural_rewrite, has_error, error_types, formality_score=None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO messages_log
         (discord_id, username, channel_id, original_text, corrected_text,
-         natural_rewrite, has_error, error_types)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+         natural_rewrite, has_error, error_types, formality_score)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     """, (discord_id, username, channel_id, original_text, corrected_text,
-          natural_rewrite, has_error, json.dumps(error_types or [])))
+          natural_rewrite, has_error, json.dumps(error_types or []), formality_score))
     conn.commit()
     cur.close()
     conn.close()
@@ -107,29 +122,55 @@ def save_vocab(discord_id, username, word_or_phrase, meaning, example_sentence):
     conn.close()
 
 
-def upsert_daily_stat(discord_id, username, stat_date, has_error, new_vocab_count=0):
+def upsert_daily_stat(discord_id, username, stat_date, has_error,
+                      new_vocab_count=0, formality_score=None):
     """Increment today's stat row for a user (creates it if it doesn't exist)."""
     conn = get_connection()
     cur = conn.cursor()
+
+    # Fetch existing avg to recalculate rolling average
+    cur.execute("""
+        SELECT total_messages, avg_formality_score FROM daily_stats
+        WHERE discord_id = %s AND stat_date = %s
+    """, (discord_id, stat_date))
+    existing = cur.fetchone()
+
+    if existing and formality_score is not None:
+        n = existing["total_messages"]
+        old_avg = existing["avg_formality_score"] or 0
+        new_avg = ((old_avg * n) + formality_score) / (n + 1)
+    elif formality_score is not None:
+        new_avg = formality_score
+    else:
+        new_avg = None
+
     cur.execute("""
         INSERT INTO daily_stats (discord_id, username, stat_date, total_messages,
-                                  messages_with_errors, new_vocab_count)
-        VALUES (%s, %s, %s, 1, %s, %s)
+                                  messages_correct, messages_with_errors,
+                                  new_vocab_count, avg_formality_score)
+        VALUES (%s, %s, %s, 1, %s, %s, %s, %s)
         ON CONFLICT (discord_id, stat_date)
         DO UPDATE SET
-            total_messages = daily_stats.total_messages + 1,
-            messages_with_errors = daily_stats.messages_with_errors + %s,
-            new_vocab_count = daily_stats.new_vocab_count + %s,
-            username = %s
-    """, (discord_id, username, stat_date, 1 if has_error else 0, new_vocab_count,
-          1 if has_error else 0, new_vocab_count, username))
+            total_messages        = daily_stats.total_messages + 1,
+            messages_correct      = daily_stats.messages_correct + %s,
+            messages_with_errors  = daily_stats.messages_with_errors + %s,
+            new_vocab_count       = daily_stats.new_vocab_count + %s,
+            avg_formality_score   = %s,
+            username              = %s
+    """, (
+        discord_id, username, stat_date,
+        0 if has_error else 1, 1 if has_error else 0,
+        new_vocab_count, new_avg,
+        # ON CONFLICT values
+        0 if has_error else 1, 1 if has_error else 0,
+        new_vocab_count, new_avg, username
+    ))
     conn.commit()
     cur.close()
     conn.close()
 
 
 def get_daily_stats(stat_date):
-    """Return all users' stats for a given date."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -142,7 +183,6 @@ def get_daily_stats(stat_date):
 
 
 def get_recent_messages(discord_id, limit=30):
-    """Used for CEFR level estimation — pulls recent messages for a user."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -182,3 +222,48 @@ def get_latest_cefr(discord_id):
     cur.close()
     conn.close()
     return row
+
+
+# ── Generated vocab helpers ──────────────────────────────────────────────────
+
+def get_all_used_words():
+    """Return a set of all words already generated (to avoid repetition)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT word FROM generated_vocab;")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {row["word"].lower() for row in rows}
+
+
+def save_generated_vocab_batch(words: list, generated_on: date):
+    """
+    words: list of dicts with keys: word, topic, word_type, meaning
+    Inserts with ON CONFLICT DO NOTHING to safely handle duplicates.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    for w in words:
+        cur.execute("""
+            INSERT INTO generated_vocab (word, topic, word_type, meaning, generated_on)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (word) DO NOTHING
+        """, (w["word"].lower(), w.get("topic", ""), w.get("word_type", ""), w.get("meaning", ""), generated_on))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_todays_generated_vocab(today: date):
+    """Return words already generated today (to avoid regenerating on restart)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT word, topic, word_type, meaning FROM generated_vocab
+        WHERE generated_on = %s
+    """, (today,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return list(rows)
