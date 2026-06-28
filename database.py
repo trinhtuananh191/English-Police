@@ -88,6 +88,33 @@ def init_db():
         );
     """)
 
+    # Safe migrations for databases created by older bot versions.
+    # CREATE TABLE IF NOT EXISTS does not add new columns to existing tables,
+    # so keep these ALTER statements here to make Railway upgrades painless.
+    cur.execute("""
+        ALTER TABLE messages_log
+        ADD COLUMN IF NOT EXISTS corrected_text TEXT,
+        ADD COLUMN IF NOT EXISTS natural_rewrite TEXT,
+        ADD COLUMN IF NOT EXISTS has_error BOOLEAN,
+        ADD COLUMN IF NOT EXISTS error_types TEXT,
+        ADD COLUMN IF NOT EXISTS formality_score REAL DEFAULT NULL;
+    """)
+
+    cur.execute("""
+        ALTER TABLE daily_stats
+        ADD COLUMN IF NOT EXISTS new_vocab_count INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS avg_formality_score REAL DEFAULT NULL;
+    """)
+
+    cur.execute("""
+        ALTER TABLE generated_vocab
+        ADD COLUMN IF NOT EXISTS topic TEXT,
+        ADD COLUMN IF NOT EXISTS word_type TEXT,
+        ADD COLUMN IF NOT EXISTS meaning TEXT,
+        ADD COLUMN IF NOT EXISTS generated_on DATE,
+        ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
