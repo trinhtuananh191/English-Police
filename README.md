@@ -7,7 +7,7 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 - **Natural rewrite suggestions** — more native-sounding phrasing, keeping your casual tone.
 - **Style-aware**: ignores abbreviations (abt, u, rn, gonna...), lowercase sentence starts, casually-lowercased names/places, and intentional slang/Gen-Z expressions.
 - **Vocabulary tracker** — automatically saves new words/phrases the bot notices in your messages.
-- **Daily stats report** — posted automatically every day in `#daily-report`: message count, error rate, new vocab learned per person.
+- **Daily stats report** — posted automatically every day in `#daily-report`: message count, error rate, new vocab learned per person. Each report covers the last 24 hours so messages after the previous report are not missed.
 - **CEFR level estimate** — updated daily based on recent messages, check yours with `!level`.
 
 ## Commands
@@ -21,6 +21,7 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 - `TARGET_CHANNEL_NAME` — (optional) channel the bot checks grammar in, default `chat-en`
 - `REPORT_CHANNEL_NAME` — (optional) channel for daily reports, default `daily-report`
 - `REPORT_HOUR_UTC` — (optional) UTC hour (0-23) to send the daily report, default `16` (which is 23:00 / 11 PM Vietnam time)
+- `APP_TIMEZONE` — (optional) timezone used for daily counters/reports, default `Asia/Ho_Chi_Minh`
 
 ## Setup notes
 1. In your Discord server, create two channels: `chat-en` (or your custom name) and `daily-report`.

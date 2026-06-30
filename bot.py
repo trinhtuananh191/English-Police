@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, date, timezone
+from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands, tasks
@@ -8,6 +8,7 @@ from openai import OpenAI
 import database as db
 from grammar import check_grammar
 from cefr import estimate_cefr_level
+from time_utils import APP_TIMEZONE_NAME, as_db_utc_naive, local_date_for, report_window_bounds_utc, today_local
 from vocab_scheduler import send_word_batch, SEND_HOURS_UTC
 
 # ====== CONFIG ======
@@ -31,6 +32,7 @@ intents.message_content = True
 intents.messages = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+last_auto_report_date = None
 
 
 # ────────────────────────────────────────────
@@ -40,6 +42,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     print(f"✅ Bot is online: {bot.user}")
+    print(
+        f"Tracking #{TARGET_CHANNEL_NAME}, reporting to #{REPORT_CHANNEL_NAME}, "
+        f"app timezone: {APP_TIMEZONE_NAME}."
+    )
     db.init_db()
     if not clock_task.is_running():
         clock_task.start()
@@ -51,6 +57,8 @@ async def on_ready():
 
 @tasks.loop(minutes=1)
 async def clock_task():
+    global last_auto_report_date
+
     now = datetime.now(timezone.utc)
     h, m = now.hour, now.minute
 
@@ -58,7 +66,28 @@ async def clock_task():
         await send_word_batch(bot, client_ai, VOCAB_CHANNEL_NAME)
 
     if h == REPORT_HOUR_UTC and m == 0:
-        await send_daily_report()
+        report_date = today_local()
+        if last_auto_report_date != report_date:
+            report_end_utc = now.replace(minute=0, second=0, microsecond=0)
+            await send_daily_report(report_date=report_date, report_end_utc=report_end_utc)
+            last_auto_report_date = report_date
+
+
+def log_unchecked_message(discord_id, username, channel_id, text, reason):
+    try:
+        db.log_message(
+            discord_id=discord_id,
+            username=username,
+            channel_id=channel_id,
+            original_text=text,
+            corrected_text="",
+            natural_rewrite="",
+            has_error=None,
+            error_types=[reason],
+            formality_score=None,
+        )
+    except Exception as e:
+        print(f"Database error while logging unchecked message: {e}")
 
 
 # ────────────────────────────────────────────
@@ -75,7 +104,20 @@ async def on_message(message: discord.Message):
         return
 
     text = message.content.strip()
+    discord_id = str(message.author.id)
+    username = message.author.display_name
+    channel_id = str(message.channel.id)
+
+    if not text:
+        await bot.process_commands(message)
+        return
+
+    if text.startswith(bot.command_prefix):
+        await bot.process_commands(message)
+        return
+
     if len(text) < MIN_LENGTH:
+        log_unchecked_message(discord_id, username, channel_id, text, "too_short_to_check")
         await bot.process_commands(message)
         return
 
@@ -83,15 +125,15 @@ async def on_message(message: discord.Message):
         result = check_grammar(client_ai, text)
     except Exception as e:
         print(f"Error calling OpenAI API: {e}")
+        log_unchecked_message(discord_id, username, channel_id, text, "grammar_check_failed")
         await bot.process_commands(message)
         return
 
     if result is None:
+        log_unchecked_message(discord_id, username, channel_id, text, "grammar_check_parse_failed")
         await bot.process_commands(message)
         return
 
-    discord_id = str(message.author.id)
-    username = message.author.display_name
     has_error = bool(result.get("has_error"))
     new_vocab = result.get("new_vocab") or []
     formality_score = result.get("formality_score")
@@ -100,7 +142,7 @@ async def on_message(message: discord.Message):
         db.log_message(
             discord_id=discord_id,
             username=username,
-            channel_id=str(message.channel.id),
+            channel_id=channel_id,
             original_text=text,
             corrected_text=result.get("corrected", ""),
             natural_rewrite=result.get("natural_rewrite", ""),
@@ -119,7 +161,7 @@ async def on_message(message: discord.Message):
         db.upsert_daily_stat(
             discord_id=discord_id,
             username=username,
-            stat_date=date.today(),
+            stat_date=today_local(),
             has_error=has_error,
             new_vocab_count=len(new_vocab),
             formality_score=formality_score,
@@ -176,7 +218,7 @@ def formality_label(score):
     return f"{round(score * 100)}% — formal 🎩"
 
 
-async def send_daily_report():
+async def send_daily_report(report_date=None, report_end_utc=None):
     report_channel = discord.utils.get(
         [ch for guild in bot.guilds for ch in guild.text_channels],
         name=REPORT_CHANNEL_NAME,
@@ -185,33 +227,48 @@ async def send_daily_report():
         print(f"⚠️ Report channel '#{REPORT_CHANNEL_NAME}' not found.")
         return
 
-    today = date.today()
-    stats = db.get_daily_stats(today)
+    start_utc, end_utc = report_window_bounds_utc(report_end_utc)
+    report_date = report_date or local_date_for(end_utc)
+    stats = db.get_activity_stats_between(
+        as_db_utc_naive(start_utc),
+        as_db_utc_naive(end_utc),
+    )
+
+    # Fallback for old deployments where messages_log may not have enough data.
+    if not stats:
+        stats = db.get_daily_stats(report_date)
 
     if not stats:
         await report_channel.send(
-            f"📊 **Daily Report — {today.isoformat()}**\n"
-            f"No activity today. Let's chat more tomorrow! 💬"
+            f"📊 **Daily Report — {report_date.isoformat()}**\n"
+            f"No tracked activity in #{TARGET_CHANNEL_NAME} for this report window. Let's chat more tomorrow! 💬"
         )
         return
 
-    lines = [f"📊 **Daily Report — {today.isoformat()}**\n"]
+    lines = [f"📊 **Daily Report — {report_date.isoformat()}**\n"]
 
     for row in stats:
         username = row["username"]
-        total = row["total_messages"]
-        correct = row["messages_correct"]
-        errors = row["messages_with_errors"]
-        vocab = row["new_vocab_count"]
+        total = row["total_messages"] or 0
+        correct = row["messages_correct"] or 0
+        errors = row["messages_with_errors"] or 0
+        unchecked = max(total - correct - errors, 0)
+        vocab = row["new_vocab_count"] or 0
         avg_formality = row.get("avg_formality_score")
 
-        lines.append(
+        user_lines = [
             f"**{username}**\n"
+            f"  💬 Total tracked messages: **{total}**\n"
             f"  ✅ Correct sentences: **{correct}**\n"
             f"  ✏️ Incorrect sentences: **{errors}**\n"
-            f"  📖 New vocab spotted: **{vocab}** word(s)\n"
-            f"  🎭 Writing style: **{formality_label(avg_formality)}**\n"
-        )
+        ]
+        if unchecked:
+            user_lines.append(f"  ⚪ Unchecked messages: **{unchecked}**\n")
+        user_lines.extend([
+            f"  📖 New vocab spotted: **{vocab}** word(s)\n",
+            f"  🎭 Writing style: **{formality_label(avg_formality)}**\n",
+        ])
+        lines.append("".join(user_lines))
 
     await report_channel.send("\n".join(lines))
 

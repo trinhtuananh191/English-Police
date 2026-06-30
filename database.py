@@ -14,7 +14,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 def get_connection():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    with conn.cursor() as cur:
+        cur.execute("SET TIME ZONE 'UTC';")
+    return conn
 
 
 def init_db():
@@ -168,6 +171,8 @@ def upsert_daily_stat(discord_id, username, stat_date, has_error,
         new_avg = ((old_avg * n) + formality_score) / (n + 1)
     elif formality_score is not None:
         new_avg = formality_score
+    elif existing:
+        new_avg = existing["avg_formality_score"]
     else:
         new_avg = None
 
@@ -209,12 +214,72 @@ def get_daily_stats(stat_date):
     return rows
 
 
+def get_activity_stats_between(start_at, end_at):
+    """
+    Build report stats directly from messages_log for a time window.
+
+    This is more reliable than daily_stats for reports because it can recover
+    from older bugs, partial stat writes, and timezone mismatches.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        WITH period_messages AS (
+            SELECT discord_id, username, has_error, formality_score, created_at
+            FROM messages_log
+            WHERE created_at >= %s AND created_at < %s
+        ),
+        latest_names AS (
+            SELECT DISTINCT ON (discord_id)
+                discord_id,
+                username
+            FROM period_messages
+            ORDER BY discord_id, created_at DESC
+        ),
+        message_stats AS (
+            SELECT
+                discord_id,
+                COUNT(*)::INTEGER AS total_messages,
+                SUM(CASE WHEN has_error IS FALSE THEN 1 ELSE 0 END)::INTEGER AS messages_correct,
+                SUM(CASE WHEN has_error IS TRUE THEN 1 ELSE 0 END)::INTEGER AS messages_with_errors,
+                AVG(formality_score) AS avg_formality_score
+            FROM period_messages
+            GROUP BY discord_id
+        ),
+        vocab_stats AS (
+            SELECT
+                discord_id,
+                COUNT(*)::INTEGER AS new_vocab_count
+            FROM vocab_bank
+            WHERE created_at >= %s AND created_at < %s
+            GROUP BY discord_id
+        )
+        SELECT
+            m.discord_id,
+            COALESCE(NULLIF(n.username, ''), m.discord_id) AS username,
+            m.total_messages,
+            m.messages_correct,
+            m.messages_with_errors,
+            COALESCE(v.new_vocab_count, 0)::INTEGER AS new_vocab_count,
+            m.avg_formality_score
+        FROM message_stats m
+        LEFT JOIN latest_names n ON n.discord_id = m.discord_id
+        LEFT JOIN vocab_stats v ON v.discord_id = m.discord_id
+        ORDER BY m.total_messages DESC
+    """, (start_at, end_at, start_at, end_at))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
 def get_recent_messages(discord_id, limit=30):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         SELECT original_text, has_error, error_types FROM messages_log
         WHERE discord_id = %s
+          AND has_error IS NOT NULL
         ORDER BY created_at DESC
         LIMIT %s
     """, (discord_id, limit))
