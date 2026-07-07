@@ -105,8 +105,57 @@ def init_db():
 
     cur.execute("""
         ALTER TABLE daily_stats
+        ADD COLUMN IF NOT EXISTS total_messages INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS messages_correct INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS messages_with_errors INTEGER DEFAULT 0,
         ADD COLUMN IF NOT EXISTS new_vocab_count INTEGER DEFAULT 0,
         ADD COLUMN IF NOT EXISTS avg_formality_score REAL DEFAULT NULL;
+    """)
+
+    cur.execute("""
+        WITH grouped AS (
+            SELECT
+                MIN(id) AS keep_id,
+                discord_id,
+                stat_date,
+                SUM(total_messages) AS total_messages,
+                SUM(messages_correct) AS messages_correct,
+                SUM(messages_with_errors) AS messages_with_errors,
+                SUM(new_vocab_count) AS new_vocab_count,
+                AVG(avg_formality_score) FILTER (WHERE avg_formality_score IS NOT NULL) AS avg_formality_score,
+                COUNT(*) AS row_count
+            FROM daily_stats
+            GROUP BY discord_id, stat_date
+            HAVING COUNT(*) > 1
+        )
+        UPDATE daily_stats d
+        SET
+            total_messages = grouped.total_messages,
+            messages_correct = grouped.messages_correct,
+            messages_with_errors = grouped.messages_with_errors,
+            new_vocab_count = grouped.new_vocab_count,
+            avg_formality_score = grouped.avg_formality_score
+        FROM grouped
+        WHERE d.id = grouped.keep_id;
+    """)
+
+    cur.execute("""
+        WITH grouped AS (
+            SELECT MIN(id) AS keep_id, discord_id, stat_date
+            FROM daily_stats
+            GROUP BY discord_id, stat_date
+            HAVING COUNT(*) > 1
+        )
+        DELETE FROM daily_stats d
+        USING grouped
+        WHERE d.discord_id = grouped.discord_id
+          AND d.stat_date = grouped.stat_date
+          AND d.id <> grouped.keep_id;
+    """)
+
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS daily_stats_discord_id_stat_date_idx
+        ON daily_stats (discord_id, stat_date);
     """)
 
     cur.execute("""
