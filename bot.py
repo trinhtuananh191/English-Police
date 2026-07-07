@@ -205,6 +205,42 @@ async def on_message(message: discord.Message):
 # DAILY REPORT
 # ────────────────────────────────────────────
 
+ERROR_META = {
+    "tense": {
+        "label": "Wrong verb tense",
+        "tip": "Review simple past vs present perfect, and make sure your tense stays consistent within a sentence.",
+    },
+    "subject_verb_agreement": {
+        "label": "Subject-verb agreement",
+        "tip": "Remember: singular subjects take singular verbs (he *goes*, not *go*). Watch out for tricky subjects like 'everyone' or 'the team'.",
+    },
+    "preposition": {
+        "label": "Wrong preposition",
+        "tip": "Prepositions are tricky — try to memorize common combos (interested *in*, good *at*, depend *on*) rather than translating from Vietnamese.",
+    },
+    "article": {
+        "label": "Missing or wrong article",
+        "tip": "Use 'a/an' for something mentioned for the first time or non-specific, and 'the' for something specific or already known.",
+    },
+    "word_order": {
+        "label": "Wrong word order",
+        "tip": "English is Subject-Verb-Object. Adverbs usually go after the verb or at the end, not between the subject and verb.",
+    },
+    "spelling": {
+        "label": "Spelling mistake",
+        "tip": "Turn on autocorrect or spellcheck in your keyboard. For recurring words, try writing them out 3-5 times to build muscle memory.",
+    },
+    "word_choice": {
+        "label": "Wrong word choice",
+        "tip": "When in doubt, look up the word in context (not just the translation). Collocations matter — it's 'make a mistake', not 'do a mistake'.",
+    },
+    "other": {
+        "label": "Other grammar issue",
+        "tip": "Keep chatting and pay attention to the corrections — patterns will become clearer over time.",
+    },
+}
+
+
 def formality_label(score):
     """Convert a 0.0-1.0 score to a human-readable label."""
     if score is None:
@@ -216,6 +252,18 @@ def formality_label(score):
     if score < 0.75:
         return f"{round(score * 100)}% — neutral 📝"
     return f"{round(score * 100)}% — formal 🎩"
+
+
+def build_error_analysis(error_counts):
+    if not error_counts:
+        return "  🎉 No grammar errors in this report window — great job!\n"
+
+    sorted_errors = sorted(error_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+    lines = ["  🔍 **Main errors in this report window:**"]
+    for error_type, count in sorted_errors:
+        meta = ERROR_META.get(error_type, ERROR_META["other"])
+        lines.append(f"    • **{meta['label']}** ({count}x) — _{meta['tip']}_")
+    return "\n".join(lines) + "\n"
 
 
 async def send_daily_report(report_date=None, report_end_utc=None):
@@ -255,6 +303,15 @@ async def send_daily_report(report_date=None, report_end_utc=None):
         unchecked = max(total - correct - errors, 0)
         vocab = row["new_vocab_count"] or 0
         avg_formality = row.get("avg_formality_score")
+        try:
+            error_counts = db.get_error_summary_between(
+                row["discord_id"],
+                as_db_utc_naive(start_utc),
+                as_db_utc_naive(end_utc),
+            )
+        except Exception as e:
+            print(f"Error fetching error summary for {username}: {e}")
+            error_counts = {}
 
         user_lines = [
             f"**{username}**\n"
@@ -267,6 +324,7 @@ async def send_daily_report(report_date=None, report_end_utc=None):
         user_lines.extend([
             f"  📖 New vocab spotted: **{vocab}** word(s)\n",
             f"  🎭 Writing style: **{formality_label(avg_formality)}**\n",
+            build_error_analysis(error_counts),
         ])
         lines.append("".join(user_lines))
 

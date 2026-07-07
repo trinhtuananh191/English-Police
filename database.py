@@ -273,6 +273,39 @@ def get_activity_stats_between(start_at, end_at):
     return rows
 
 
+def get_error_summary_between(discord_id: str, start_at, end_at) -> dict:
+    """
+    Return aggregated error type counts for a user in a report window.
+
+    The report itself is built from messages_log over a rolling 24-hour UTC
+    window, so this uses the same bounds instead of DATE(created_at).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT error_types FROM messages_log
+        WHERE discord_id = %s
+          AND has_error IS TRUE
+          AND created_at >= %s
+          AND created_at < %s
+          AND error_types IS NOT NULL
+          AND error_types != '[]'
+    """, (discord_id, start_at, end_at))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    counts = {}
+    for row in rows:
+        try:
+            types = json.loads(row["error_types"]) if isinstance(row["error_types"], str) else row["error_types"]
+            for error_type in types:
+                counts[error_type] = counts.get(error_type, 0) + 1
+        except Exception:
+            pass
+    return counts
+
+
 def get_recent_messages(discord_id, limit=30):
     conn = get_connection()
     cur = conn.cursor()
