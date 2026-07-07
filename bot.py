@@ -33,6 +33,7 @@ intents.messages = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 last_auto_report_date = None
+DISCORD_MESSAGE_LIMIT = 2000
 
 
 # ────────────────────────────────────────────
@@ -266,6 +267,29 @@ def build_error_analysis(error_counts):
     return "\n".join(lines) + "\n"
 
 
+async def send_report_block(channel, content):
+    if len(content) <= DISCORD_MESSAGE_LIMIT:
+        await channel.send(content)
+        return
+
+    chunks = []
+    current = ""
+    for line in content.splitlines(keepends=True):
+        if len(current) + len(line) > DISCORD_MESSAGE_LIMIT:
+            if current:
+                chunks.append(current)
+                current = ""
+            while len(line) > DISCORD_MESSAGE_LIMIT:
+                chunks.append(line[:DISCORD_MESSAGE_LIMIT])
+                line = line[DISCORD_MESSAGE_LIMIT:]
+        current += line
+    if current:
+        chunks.append(current)
+
+    for chunk in chunks:
+        await channel.send(chunk)
+
+
 async def send_daily_report(report_date=None, report_end_utc=None):
     report_channel = discord.utils.get(
         [ch for guild in bot.guilds for ch in guild.text_channels],
@@ -293,7 +317,7 @@ async def send_daily_report(report_date=None, report_end_utc=None):
         )
         return
 
-    lines = [f"📊 **Daily Report — {report_date.isoformat()}**\n"]
+    await send_report_block(report_channel, f"📊 **Daily Report — {report_date.isoformat()}**")
 
     for row in stats:
         username = row["username"]
@@ -326,9 +350,7 @@ async def send_daily_report(report_date=None, report_end_utc=None):
             f"  🎭 Writing style: **{formality_label(avg_formality)}**\n",
             build_error_analysis(error_counts),
         ])
-        lines.append("".join(user_lines))
-
-    await report_channel.send("\n".join(lines))
+        await send_report_block(report_channel, "".join(user_lines))
 
     # CEFR update
     for row in stats:
@@ -363,8 +385,13 @@ async def level_cmd(ctx):
 @bot.command(name="report")
 async def report_cmd(ctx):
     """Manually trigger today's daily report (for testing)."""
-    await send_daily_report()
-    await ctx.send("Report sent! ✅")
+    try:
+        await ctx.send("Generating report...")
+        await send_daily_report()
+        await ctx.send("Report sent! ✅")
+    except Exception as e:
+        print(f"!report command failed: {e}")
+        await ctx.send(f"Report failed: `{type(e).__name__}`. Check bot logs for details.")
 
 
 @bot.command(name="vocab")
@@ -372,6 +399,14 @@ async def vocab_cmd(ctx):
     """Manually trigger the next vocab drop (for testing)."""
     await send_word_batch(bot, client_ai, VOCAB_CHANNEL_NAME)
     await ctx.send("Vocab drop sent! 📚")
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    print(f"Command '{ctx.command}' failed: {error}")
+    await ctx.send(f"Command failed: `{type(error).__name__}`.")
 
 
 # ────────────────────────────────────────────
