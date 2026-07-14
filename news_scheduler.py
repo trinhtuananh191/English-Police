@@ -10,6 +10,7 @@ import html
 import os
 import random
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,13 +27,14 @@ GNEWS_SEARCH_URL = "https://gnews.io/api/v4/search"
 GNEWS_TIMEOUT_SECONDS = 10
 GNEWS_ARTICLES_PER_TOPIC = 2
 GNEWS_RESULTS_PER_TOPIC = 10
+GNEWS_REQUEST_DELAY_SECONDS = 1.2
 USER_AGENT = "Mozilla/5.0 (compatible; EnglishBuddyBot/1.0)"
 
 NEWS_TOPICS = [
-    ("Tech 💻", "technology OR startup OR gadgets"),
-    ("AI / ML 🤖", "artificial intelligence OR machine learning OR AI"),
-    ("Design 🎨", "design OR UX OR UI"),
-    ("Dev 🛠️", "programming OR software development OR GitHub"),
+    ("Tech 💻", "technology"),
+    ("AI / ML 🤖", "artificial intelligence"),
+    ("Design 🎨", "design"),
+    ("Dev 🛠️", "software development"),
 ]
 
 SUMMARY_PROMPT = """You are summarizing a tech/design article for a group of young Vietnamese developers and designers learning English. Write a SHORT, engaging summary in plain English (2-3 sentences max). Keep it casual but informative — highlight what's interesting or why it matters. No intro like "This article..." — just dive in.
@@ -70,22 +72,51 @@ def _article_from_gnews(item: dict, category: str):
 
 
 def _build_gnews_url(query: str, max_results: int) -> str:
+    api_key = os.getenv("GNEWS_API_KEY") or GNEWS_API_KEY
     params = {
         "q": query,
         "lang": "en",
         "max": max_results,
         "in": "title,description",
         "sortby": "publishedAt",
-        "apikey": GNEWS_API_KEY,
+        "apikey": api_key,
     }
     return f"{GNEWS_SEARCH_URL}?{urllib.parse.urlencode(params)}"
 
 
-def fetch_gnews_articles(category: str, query: str, max_results: int = GNEWS_RESULTS_PER_TOPIC) -> list:
-    """Fetch GNews search results for a topic. Returns an empty list on failure."""
-    if not GNEWS_API_KEY:
-        print("⚠️ Missing GNEWS_API_KEY in Environment Variables!")
-        return []
+def _format_gnews_error_body(error_body: str) -> str:
+    try:
+        payload = json.loads(error_body)
+    except Exception:
+        return error_body[:300]
+
+    errors = payload.get("errors")
+    if isinstance(errors, list):
+        return "; ".join(str(error) for error in errors)[:300]
+    if isinstance(errors, dict):
+        return "; ".join(f"{key}: {value}" for key, value in errors.items())[:300]
+    return error_body[:300]
+
+
+def _gnews_status_message(status_code: int) -> str:
+    if status_code == 400:
+        return "GNews rejected the request parameters"
+    if status_code == 401:
+        return "GNews API key is missing or invalid"
+    if status_code == 403:
+        return "GNews quota or plan limit was reached"
+    if status_code == 429:
+        return "GNews rate limit was reached"
+    return "GNews request failed"
+
+
+def fetch_gnews_articles(category: str, query: str, max_results: int = GNEWS_RESULTS_PER_TOPIC) -> tuple:
+    """Fetch GNews search results for a topic. Returns articles plus an optional error."""
+    api_key = os.getenv("GNEWS_API_KEY") or GNEWS_API_KEY
+    if not api_key:
+        message = "Missing GNEWS_API_KEY in Railway environment variables."
+        print(f"⚠️ {message}")
+        return [], message
 
     try:
         request = urllib.request.Request(
@@ -100,27 +131,37 @@ def fetch_gnews_articles(category: str, query: str, max_results: int = GNEWS_RES
             error_body = e.read().decode("utf-8")
         except Exception:
             pass
-        print(f"GNews fetch error for '{category}' ({e.code}): {error_body or e.reason}")
-        return []
+        detail = _format_gnews_error_body(error_body) if error_body else str(e.reason)
+        message = f"{_gnews_status_message(e.code)} for {category} ({e.code}): {detail}"
+        print(f"GNews fetch error: {message}")
+        return [], message
     except Exception as e:
-        print(f"GNews fetch error for '{category}': {e}")
-        return []
+        message = f"GNews fetch error for {category}: {e}"
+        print(message)
+        return [], message
 
     articles = []
     for item in payload.get("articles", []):
         article = _article_from_gnews(item, category)
         if article:
             articles.append(article)
-    return articles
+
+    if not articles:
+        return [], f"GNews returned no usable articles for {category}."
+
+    return articles, None
 
 
-def collect_daily_articles() -> list:
+def collect_daily_articles() -> tuple[list, list]:
     """Pick two recent articles from each configured GNews topic."""
     articles = []
+    errors = []
     seen_links = set()
 
-    for category, query in NEWS_TOPICS:
-        topic_articles = fetch_gnews_articles(category, query)
+    for index, (category, query) in enumerate(NEWS_TOPICS):
+        topic_articles, error = fetch_gnews_articles(category, query)
+        if error:
+            errors.append(error)
         random.shuffle(topic_articles)
 
         selected_count = 0
@@ -133,7 +174,10 @@ def collect_daily_articles() -> list:
             if selected_count >= GNEWS_ARTICLES_PER_TOPIC:
                 break
 
-    return articles
+        if index < len(NEWS_TOPICS) - 1:
+            time.sleep(GNEWS_REQUEST_DELAY_SECONDS)
+
+    return articles, errors
 
 
 def summarize_article(client_ai: OpenAI, article: dict) -> str:
@@ -173,9 +217,13 @@ async def send_daily_news(bot, client_ai: OpenAI, channel_name: str):
         print(f"⚠️ News channel '#{channel_name}' not found.")
         return
 
-    articles = collect_daily_articles()
+    articles, errors = collect_daily_articles()
     if not articles:
-        await news_channel.send("⚠️ Could not fetch any news articles today.")
+        detail = errors[0] if errors else "GNews returned no articles for the configured topics."
+        await news_channel.send(
+            f"⚠️ Could not fetch any news articles today.\n"
+            f"Reason: {detail}"
+        )
         return
 
     today = today_local()
