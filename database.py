@@ -78,6 +78,15 @@ def init_db():
         );
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS deploy_announcements (
+            id SERIAL PRIMARY KEY,
+            deploy_key TEXT NOT NULL UNIQUE,
+            message TEXT,
+            announced_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+
     # Track all AI-generated vocab words so they are never repeated
     cur.execute("""
         CREATE TABLE IF NOT EXISTS generated_vocab (
@@ -171,6 +180,28 @@ def init_db():
     cur.close()
     conn.close()
     print("✅ Database tables ready.")
+
+
+def claim_deploy_announcement(deploy_key, message):
+    """
+    Return True only the first time a deploy key is seen.
+
+    This keeps deploy announcements from repeating on reconnects or restarts
+    for the same deployed commit.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO deploy_announcements (deploy_key, message)
+        VALUES (%s, %s)
+        ON CONFLICT (deploy_key) DO NOTHING
+        RETURNING id
+    """, (deploy_key, message))
+    inserted = cur.fetchone() is not None
+    conn.commit()
+    cur.close()
+    conn.close()
+    return inserted
 
 
 def log_message(discord_id, username, channel_id, original_text, corrected_text,

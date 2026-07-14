@@ -7,24 +7,37 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 - **Natural rewrite suggestions** — more native-sounding phrasing, keeping your casual tone.
 - **Style-aware**: ignores abbreviations (abt, u, rn, gonna...), lowercase sentence starts, casually-lowercased names/places, and intentional slang/Gen-Z expressions.
 - **Vocabulary tracker** — automatically saves new words/phrases the bot notices in your messages.
+- **Vocab drops** — posts AI-generated vocabulary batches in `#vocab-drop`.
+- **Daily news briefing** — posts GNews-based Tech/AI/Design/Dev article summaries in `#daily-news` at 09:00 Vietnam time.
+- **Deploy announcement** — automatically announces successful new-feature deploys once per deploy.
 - **Daily stats report** — posted automatically every day in `#daily-report`: message count, error rate, new vocab learned per person. Each report covers the last 24 hours so messages after the previous report are not missed.
 - **CEFR level estimate** — updated daily based on recent messages, check yours with `!level`.
 
 ## Commands
 - `!level` — show your latest estimated CEFR level
 - `!report` — manually trigger today's report (for testing)
+- `!vocab` — manually trigger the current vocab drop window
+- `!news` — manually trigger today's daily news briefing
 
 ## Required Environment Variables (set in Railway)
 - `DISCORD_BOT_TOKEN` — from Discord Developer Portal
 - `OPENAI_API_KEY` — from platform.openai.com
+- `GNEWS_API_KEY` — from gnews.io, used for the daily news briefing
 - `DATABASE_URL` — automatically provided by Railway once you attach a PostgreSQL database to the project (no manual setup needed)
 - `TARGET_CHANNEL_NAME` — (optional) channel the bot checks grammar in, default `chat-en`
 - `REPORT_CHANNEL_NAME` — (optional) channel for daily reports, default `daily-report`
+- `VOCAB_CHANNEL_NAME` — (optional) channel for vocabulary drops, default `vocab-drop`
+- `NEWS_CHANNEL_NAME` — (optional) channel for daily news, default `daily-news`
+- `DEPLOY_ANNOUNCE_CHANNEL_NAME` — (optional) channel for deploy announcements, default uses `TARGET_CHANNEL_NAME`
+- `DEPLOY_ANNOUNCEMENT_MESSAGE` — (optional) deploy announcement text, default `Anh vừa học học được kỹ năng mới, mấy con vợ vào test đi`
+- `DEPLOY_ANNOUNCE_KEY` — (optional) custom unique key for each deploy if your host does not expose a commit/deployment id
+- `DEPLOY_ANNOUNCE_ENABLED` — (optional) set to `false` to disable deploy announcements
 - `REPORT_HOUR_UTC` — (optional) UTC hour (0-23) to send the daily report, default `16` (which is 23:00 / 11 PM Vietnam time)
 - `APP_TIMEZONE` — (optional) timezone used for daily counters/reports, default `Asia/Ho_Chi_Minh`
 
 ## Setup notes
-1. In your Discord server, create two channels: `chat-en` (or your custom name) and `daily-report`.
+1. In your Discord server, create channels for `chat-en` (or your custom name), `daily-report`, `vocab-drop`, and `daily-news`.
 2. In Railway, click **"New"** → **"Database"** → **"Add PostgreSQL"** to attach a database to this project. Railway will automatically inject `DATABASE_URL` into your bot's environment variables — you don't need to set it manually.
 3. Make sure "Message Content Intent" is enabled in the Discord Developer Portal (under the Bot section).
 4. Deploy as usual — the bot will auto-create its database tables on first run.
+5. No command is needed for deploy announcements. When a new deploy starts successfully, the bot posts the configured message once for that deploy. Railway provides `RAILWAY_DEPLOYMENT_ID` automatically, so `DEPLOY_ANNOUNCE_KEY` is only needed on hosts without a deploy/commit id.

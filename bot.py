@@ -8,6 +8,7 @@ from openai import OpenAI
 import database as db
 from grammar import check_grammar
 from cefr import estimate_cefr_level
+from news_scheduler import NEWS_SEND_HOUR_UTC, send_daily_news
 from time_utils import APP_TIMEZONE_NAME, as_db_utc_naive, local_date_for, report_window_bounds_utc, today_local
 from vocab_scheduler import send_word_batch, SEND_HOURS_UTC
 
@@ -17,6 +18,18 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TARGET_CHANNEL_NAME = os.getenv("TARGET_CHANNEL_NAME", "chat-en")
 REPORT_CHANNEL_NAME = os.getenv("REPORT_CHANNEL_NAME", "daily-report")
 VOCAB_CHANNEL_NAME = os.getenv("VOCAB_CHANNEL_NAME", "vocab-drop")
+NEWS_CHANNEL_NAME = os.getenv("NEWS_CHANNEL_NAME", "daily-news")
+DEPLOY_ANNOUNCE_CHANNEL_NAME = os.getenv("DEPLOY_ANNOUNCE_CHANNEL_NAME", TARGET_CHANNEL_NAME)
+DEPLOY_ANNOUNCEMENT_MESSAGE = os.getenv(
+    "DEPLOY_ANNOUNCEMENT_MESSAGE",
+    "Anh vừa học học được kỹ năng mới, mấy con vợ vào test đi",
+)
+DEPLOY_ANNOUNCE_ENABLED = os.getenv("DEPLOY_ANNOUNCE_ENABLED", "true").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 REPORT_HOUR_UTC = int(os.getenv("REPORT_HOUR_UTC", "16"))  # 23:00 ICT
 MIN_LENGTH = 6
 
@@ -33,6 +46,7 @@ intents.messages = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 last_auto_report_date = None
+deploy_announcement_checked = False
 DISCORD_MESSAGE_LIMIT = 2000
 
 
@@ -40,14 +54,66 @@ DISCORD_MESSAGE_LIMIT = 2000
 # STARTUP
 # ────────────────────────────────────────────
 
+def get_deploy_announcement_key():
+    for env_name in (
+        "DEPLOY_ANNOUNCE_KEY",
+        "RAILWAY_DEPLOYMENT_ID",
+        "RAILWAY_GIT_COMMIT_SHA",
+        "RENDER_GIT_COMMIT",
+        "VERCEL_GIT_COMMIT_SHA",
+        "HEROKU_SLUG_COMMIT",
+        "SOURCE_VERSION",
+    ):
+        value = os.getenv(env_name)
+        if value:
+            return f"{env_name}:{value}"
+    return None
+
+
+async def send_deploy_announcement_once():
+    global deploy_announcement_checked
+
+    if deploy_announcement_checked or not DEPLOY_ANNOUNCE_ENABLED:
+        return
+    deploy_announcement_checked = True
+
+    deploy_key = get_deploy_announcement_key()
+    if not deploy_key:
+        print("⚠️ Deploy announcement skipped: no deploy key found. Set DEPLOY_ANNOUNCE_KEY to enable it.")
+        return
+
+    announce_channel = discord.utils.get(
+        [ch for guild in bot.guilds for ch in guild.text_channels],
+        name=DEPLOY_ANNOUNCE_CHANNEL_NAME,
+    )
+    if announce_channel is None:
+        print(f"⚠️ Deploy announcement channel '#{DEPLOY_ANNOUNCE_CHANNEL_NAME}' not found.")
+        return
+
+    try:
+        should_announce = db.claim_deploy_announcement(deploy_key, DEPLOY_ANNOUNCEMENT_MESSAGE)
+    except Exception as e:
+        print(f"Deploy announcement tracking failed: {e}")
+        return
+
+    if not should_announce:
+        return
+
+    try:
+        await announce_channel.send(DEPLOY_ANNOUNCEMENT_MESSAGE)
+    except Exception as e:
+        print(f"Error sending deploy announcement: {e}")
+
 @bot.event
 async def on_ready():
     print(f"✅ Bot is online: {bot.user}")
     print(
         f"Tracking #{TARGET_CHANNEL_NAME}, reporting to #{REPORT_CHANNEL_NAME}, "
+        f"vocab in #{VOCAB_CHANNEL_NAME}, news in #{NEWS_CHANNEL_NAME}, "
         f"app timezone: {APP_TIMEZONE_NAME}."
     )
     db.init_db()
+    await send_deploy_announcement_once()
     if not clock_task.is_running():
         clock_task.start()
 
@@ -65,6 +131,9 @@ async def clock_task():
 
     if h in SEND_HOURS_UTC and m == 0:
         await send_word_batch(bot, client_ai, VOCAB_CHANNEL_NAME)
+
+    if h == NEWS_SEND_HOUR_UTC and m == 0:
+        await send_daily_news(bot, client_ai, NEWS_CHANNEL_NAME)
 
     if h == REPORT_HOUR_UTC and m == 0:
         report_date = today_local()
@@ -399,6 +468,13 @@ async def vocab_cmd(ctx):
     """Manually trigger the next vocab drop (for testing)."""
     await send_word_batch(bot, client_ai, VOCAB_CHANNEL_NAME)
     await ctx.send("Vocab drop sent! 📚")
+
+
+@bot.command(name="news")
+async def news_cmd(ctx):
+    """Manually trigger today's daily news drop."""
+    await ctx.send("Fetching today's articles... 📰")
+    await send_daily_news(bot, client_ai, NEWS_CHANNEL_NAME)
 
 
 @bot.event
