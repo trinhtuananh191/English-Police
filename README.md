@@ -17,7 +17,7 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 - `!level` — show your latest estimated CEFR level
 - `!report` — manually trigger today's report (for testing)
 - `!vocab` — manually trigger the current vocab drop window
-- `!news` — manually trigger today's daily news briefing
+- `!news` or `/news` — manually trigger today's daily news briefing
 
 ## Required Environment Variables (set in Railway)
 - `DISCORD_BOT_TOKEN` — from Discord Developer Portal
@@ -28,6 +28,8 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 - `REPORT_CHANNEL_NAME` — (optional) channel for daily reports, default `daily-report`
 - `VOCAB_CHANNEL_NAME` — (optional) channel for vocabulary drops, default `vocab-drop`
 - `NEWS_CHANNEL_NAME` — (optional) channel for daily news, default `daily-news`
+- `DISCORD_GUILD_ID` — (optional) sync slash commands to one Discord server immediately instead of global sync
+- `SYNC_SLASH_COMMANDS` — (optional) set to `false` to disable slash command syncing on startup
 - `DEPLOY_ANNOUNCE_CHANNEL_NAME` — (optional) channel for deploy announcements, default uses `TARGET_CHANNEL_NAME`
 - `DEPLOY_ANNOUNCEMENT_MESSAGE` — (optional) deploy announcement text, default `Anh vừa học học được kỹ năng mới, mấy con vợ vào test đi`
 - `DEPLOY_ANNOUNCE_KEY` — (optional) custom unique key for each deploy if your host does not expose a commit/deployment id
@@ -41,3 +43,4 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 3. Make sure "Message Content Intent" is enabled in the Discord Developer Portal (under the Bot section).
 4. Deploy as usual — the bot will auto-create its database tables on first run.
 5. No command is needed for deploy announcements. When a new deploy starts successfully, the bot posts the configured message once for that deploy. Railway provides `RAILWAY_DEPLOYMENT_ID` automatically, so `DEPLOY_ANNOUNCE_KEY` is only needed on hosts without a deploy/commit id.
+6. Use `/news` to manually trigger the news briefing. Global slash commands can take time to appear; set `DISCORD_GUILD_ID` for immediate server-level sync during testing.

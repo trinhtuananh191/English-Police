@@ -19,6 +19,13 @@ TARGET_CHANNEL_NAME = os.getenv("TARGET_CHANNEL_NAME", "chat-en")
 REPORT_CHANNEL_NAME = os.getenv("REPORT_CHANNEL_NAME", "daily-report")
 VOCAB_CHANNEL_NAME = os.getenv("VOCAB_CHANNEL_NAME", "vocab-drop")
 NEWS_CHANNEL_NAME = os.getenv("NEWS_CHANNEL_NAME", "daily-news")
+DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
+SYNC_SLASH_COMMANDS = os.getenv("SYNC_SLASH_COMMANDS", "true").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 DEPLOY_ANNOUNCE_CHANNEL_NAME = os.getenv("DEPLOY_ANNOUNCE_CHANNEL_NAME", TARGET_CHANNEL_NAME)
 DEPLOY_ANNOUNCEMENT_MESSAGE = os.getenv(
     "DEPLOY_ANNOUNCEMENT_MESSAGE",
@@ -47,12 +54,34 @@ intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 last_auto_report_date = None
 deploy_announcement_checked = False
+slash_commands_synced = False
 DISCORD_MESSAGE_LIMIT = 2000
 
 
 # ────────────────────────────────────────────
 # STARTUP
 # ────────────────────────────────────────────
+
+async def sync_slash_commands_once():
+    global slash_commands_synced
+
+    if slash_commands_synced or not SYNC_SLASH_COMMANDS:
+        return
+    slash_commands_synced = True
+
+    try:
+        if DISCORD_GUILD_ID:
+            guild = discord.Object(id=int(DISCORD_GUILD_ID))
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            print(f"✅ Synced {len(synced)} slash command(s) to guild {DISCORD_GUILD_ID}.")
+            return
+
+        synced = await bot.tree.sync()
+        print(f"✅ Synced {len(synced)} global slash command(s).")
+    except Exception as e:
+        print(f"Slash command sync failed: {e}")
+
 
 def get_deploy_announcement_key():
     for env_name in (
@@ -113,6 +142,7 @@ async def on_ready():
         f"app timezone: {APP_TIMEZONE_NAME}."
     )
     db.init_db()
+    await sync_slash_commands_once()
     await send_deploy_announcement_once()
     if not clock_task.is_running():
         clock_task.start()
@@ -470,9 +500,11 @@ async def vocab_cmd(ctx):
     await ctx.send("Vocab drop sent! 📚")
 
 
-@bot.command(name="news")
+@bot.hybrid_command(name="news", description="Manually trigger today's daily news briefing.")
 async def news_cmd(ctx):
-    """Manually trigger today's daily news drop."""
+    """Manually trigger today's daily news drop with either !news or /news."""
+    if getattr(ctx, "interaction", None):
+        await ctx.defer()
     await ctx.send("Fetching today's articles... 📰")
     await send_daily_news(bot, client_ai, NEWS_CHANNEL_NAME)
 
