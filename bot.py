@@ -55,6 +55,12 @@ DEPLOY_ANNOUNCE_ENABLED = os.getenv("DEPLOY_ANNOUNCE_ENABLED", "true").lower() n
     "off",
 }
 REPORT_HOUR_UTC = int(os.getenv("REPORT_HOUR_UTC", "16"))  # 23:00 ICT
+SOURCE_REVISION = (
+    os.getenv("RAILWAY_GIT_COMMIT_SHA")
+    or os.getenv("RENDER_GIT_COMMIT")
+    or os.getenv("SOURCE_VERSION")
+    or "unknown"
+)
 MIN_LENGTH = 6
 
 if not DISCORD_BOT_TOKEN:
@@ -153,6 +159,7 @@ async def send_deploy_announcement_once():
 @bot.event
 async def on_ready():
     print(f"✅ Bot is online: {bot.user}")
+    print(f"Source revision: {SOURCE_REVISION[:12]}")
     print(
         f"Tracking #{TARGET_CHANNEL_NAME}, reporting to #{REPORT_CHANNEL_NAME}, "
         f"vocab in #{VOCAB_CHANNEL_NAME}, news in #{NEWS_CHANNEL_NAME}, "
