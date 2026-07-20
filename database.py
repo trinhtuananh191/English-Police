@@ -100,6 +100,60 @@ def init_db():
         );
     """)
 
+    # One active personalised translation exercise per learner.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS practice_sessions (
+            discord_id TEXT PRIMARY KEY,
+            username TEXT,
+            channel_id TEXT NOT NULL,
+            round_number INTEGER NOT NULL DEFAULT 1,
+            variant TEXT NOT NULL,
+            level TEXT NOT NULL,
+            context TEXT NOT NULL,
+            vietnamese_prompt TEXT NOT NULL,
+            awaiting_answer BOOLEAN NOT NULL DEFAULT TRUE,
+            updated_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+
+    # Attempt history lets the tutor adapt later rounds to recurring mistakes.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS practice_attempts (
+            id SERIAL PRIMARY KEY,
+            discord_id TEXT NOT NULL,
+            username TEXT,
+            round_number INTEGER NOT NULL,
+            variant TEXT NOT NULL,
+            level TEXT NOT NULL,
+            context TEXT NOT NULL,
+            vietnamese_prompt TEXT NOT NULL,
+            learner_answer TEXT NOT NULL,
+            overall_score REAL,
+            grammar_score REAL,
+            vocabulary_score REAL,
+            naturalness_score REAL,
+            native_like_score REAL,
+            error_summary TEXT,
+            feedback_markdown TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+
+    # Shared 14:00/21:00 prompts are looked up by Discord reply message ID.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS scheduled_practice_prompts (
+            id SERIAL PRIMARY KEY,
+            schedule_key TEXT NOT NULL UNIQUE,
+            prompt_message_id TEXT NOT NULL UNIQUE,
+            channel_id TEXT NOT NULL,
+            variant TEXT NOT NULL,
+            level TEXT NOT NULL,
+            context TEXT NOT NULL,
+            vietnamese_prompt TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+
     # Safe migrations for databases created by older bot versions.
     # CREATE TABLE IF NOT EXISTS does not add new columns to existing tables,
     # so keep these ALTER statements here to make Railway upgrades painless.
@@ -174,6 +228,11 @@ def init_db():
         ADD COLUMN IF NOT EXISTS meaning TEXT,
         ADD COLUMN IF NOT EXISTS generated_on DATE,
         ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS practice_attempts_discord_id_created_at_idx
+        ON practice_attempts (discord_id, created_at DESC);
     """)
 
     conn.commit()
@@ -472,3 +531,182 @@ def get_todays_generated_vocab(today: date):
     cur.close()
     conn.close()
     return list(rows)
+
+
+# ── Translation practice helpers ─────────────────────────────────────────────
+
+def save_practice_session(discord_id, username, channel_id, round_number,
+                          variant, level, context, vietnamese_prompt):
+    """Create or replace the exercise awaiting a learner's next answer."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO practice_sessions (
+            discord_id, username, channel_id, round_number, variant, level,
+            context, vietnamese_prompt, awaiting_answer, updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, NOW())
+        ON CONFLICT (discord_id)
+        DO UPDATE SET
+            username = EXCLUDED.username,
+            channel_id = EXCLUDED.channel_id,
+            round_number = EXCLUDED.round_number,
+            variant = EXCLUDED.variant,
+            level = EXCLUDED.level,
+            context = EXCLUDED.context,
+            vietnamese_prompt = EXCLUDED.vietnamese_prompt,
+            awaiting_answer = TRUE,
+            updated_at = NOW()
+    """, (
+        discord_id, username, channel_id, round_number, variant, level,
+        context, vietnamese_prompt,
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def claim_practice_session(discord_id, channel_id):
+    """Atomically claim an awaiting exercise so an answer is graded once."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE practice_sessions
+        SET awaiting_answer = FALSE, updated_at = NOW()
+        WHERE discord_id = %s
+          AND channel_id = %s
+          AND awaiting_answer IS TRUE
+        RETURNING round_number, variant, level, context, vietnamese_prompt
+    """, (discord_id, channel_id))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row
+
+
+def restore_practice_session(discord_id, channel_id):
+    """Allow the learner to retry when AI grading fails."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE practice_sessions
+        SET awaiting_answer = TRUE, updated_at = NOW()
+        WHERE discord_id = %s AND channel_id = %s
+    """, (discord_id, channel_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_next_practice_round(discord_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COALESCE(MAX(round_number), 0) + 1 AS next_round
+        FROM practice_attempts
+        WHERE discord_id = %s
+    """, (discord_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return int(row["next_round"] if row else 1)
+
+
+def get_recent_practice_attempts(discord_id, limit=5):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT round_number, variant, level, context, overall_score, error_summary
+        FROM practice_attempts
+        WHERE discord_id = %s
+        ORDER BY created_at DESC
+        LIMIT %s
+    """, (discord_id, limit))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def save_practice_attempt(discord_id, username, round_number, challenge,
+                          learner_answer, result):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO practice_attempts (
+            discord_id, username, round_number, variant, level, context,
+            vietnamese_prompt, learner_answer, overall_score, grammar_score,
+            vocabulary_score, naturalness_score, native_like_score,
+            error_summary, feedback_markdown
+        )
+        VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+    """, (
+        discord_id,
+        username,
+        round_number,
+        challenge["variant"],
+        challenge["level"],
+        challenge["context"],
+        challenge["vietnamese_prompt"],
+        learner_answer,
+        result["overall_score"],
+        result["grammar_score"],
+        result["vocabulary_score"],
+        result["naturalness_score"],
+        result["native_like_score"],
+        result["error_summary"],
+        result["feedback_markdown"],
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def scheduled_practice_exists(schedule_key):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT 1 FROM scheduled_practice_prompts WHERE schedule_key = %s LIMIT 1
+    """, (schedule_key,))
+    exists = cur.fetchone() is not None
+    cur.close()
+    conn.close()
+    return exists
+
+
+def save_scheduled_practice(schedule_key, prompt_message_id, channel_id,
+                            variant, level, context, vietnamese_prompt):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO scheduled_practice_prompts (
+            schedule_key, prompt_message_id, channel_id, variant, level,
+            context, vietnamese_prompt
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (schedule_key) DO NOTHING
+    """, (
+        schedule_key, prompt_message_id, channel_id, variant, level, context,
+        vietnamese_prompt,
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_scheduled_practice(prompt_message_id, channel_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT variant, level, context, vietnamese_prompt
+        FROM scheduled_practice_prompts
+        WHERE prompt_message_id = %s AND channel_id = %s
+        LIMIT 1
+    """, (prompt_message_id, channel_id))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row

@@ -9,7 +9,23 @@ import database as db
 from grammar import check_grammar
 from cefr import estimate_cefr_level
 from news_scheduler import NEWS_SEND_HOUR_UTC, send_daily_news
-from time_utils import APP_TIMEZONE_NAME, as_db_utc_naive, local_date_for, report_window_bounds_utc, today_local
+from practice import (
+    PRACTICE_SEND_HOURS_LOCAL,
+    format_challenge,
+    format_review_with_next,
+    generate_challenge,
+    review_translation,
+    send_long_message,
+    send_scheduled_practice,
+)
+from time_utils import (
+    APP_TIMEZONE_NAME,
+    as_db_utc_naive,
+    local_date_for,
+    now_local,
+    report_window_bounds_utc,
+    today_local,
+)
 from vocab_scheduler import send_word_batch, SEND_HOURS_UTC
 
 # ====== CONFIG ======
@@ -19,6 +35,7 @@ TARGET_CHANNEL_NAME = os.getenv("TARGET_CHANNEL_NAME", "chat-en")
 REPORT_CHANNEL_NAME = os.getenv("REPORT_CHANNEL_NAME", "daily-report")
 VOCAB_CHANNEL_NAME = os.getenv("VOCAB_CHANNEL_NAME", "vocab-drop")
 NEWS_CHANNEL_NAME = os.getenv("NEWS_CHANNEL_NAME", "daily-news")
+PRACTICE_CHANNEL_NAME = os.getenv("PRACTICE_CHANNEL_NAME", TARGET_CHANNEL_NAME)
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 SYNC_SLASH_COMMANDS = os.getenv("SYNC_SLASH_COMMANDS", "true").lower() not in {
     "0",
@@ -139,6 +156,7 @@ async def on_ready():
     print(
         f"Tracking #{TARGET_CHANNEL_NAME}, reporting to #{REPORT_CHANNEL_NAME}, "
         f"vocab in #{VOCAB_CHANNEL_NAME}, news in #{NEWS_CHANNEL_NAME}, "
+        f"practice in #{PRACTICE_CHANNEL_NAME} at {PRACTICE_SEND_HOURS_LOCAL}, "
         f"app timezone: {APP_TIMEZONE_NAME}."
     )
     db.init_db()
@@ -164,6 +182,13 @@ async def clock_task():
 
     if h == NEWS_SEND_HOUR_UTC and m == 0:
         await send_daily_news(bot, client_ai, NEWS_CHANNEL_NAME)
+
+    local_now = now_local()
+    if local_now.hour in PRACTICE_SEND_HOURS_LOCAL and local_now.minute == 0:
+        try:
+            await send_scheduled_practice(bot, client_ai, PRACTICE_CHANNEL_NAME, local_now)
+        except Exception as e:
+            print(f"Scheduled practice failed: {e}")
 
     if h == REPORT_HOUR_UTC and m == 0:
         report_date = today_local()
@@ -194,13 +219,100 @@ def log_unchecked_message(discord_id, username, channel_id, text, reason):
 # GRAMMAR CHECK
 # ────────────────────────────────────────────
 
+def challenge_from_row(row):
+    return {
+        "variant": row["variant"],
+        "level": row["level"],
+        "context": row["context"],
+        "vietnamese_prompt": row["vietnamese_prompt"],
+    }
+
+
+def claim_practice_for_message(message, discord_id, channel_id):
+    """Resolve a shared-prompt reply first, then a personalised active round."""
+    reference = getattr(message, "reference", None)
+    prompt_message_id = getattr(reference, "message_id", None)
+    if prompt_message_id:
+        scheduled = db.get_scheduled_practice(str(prompt_message_id), channel_id)
+        if scheduled:
+            return (
+                challenge_from_row(scheduled),
+                db.get_next_practice_round(discord_id),
+                False,
+            )
+
+    session = db.claim_practice_session(discord_id, channel_id)
+    if session:
+        return challenge_from_row(session), int(session["round_number"]), True
+    return None
+
+
+async def handle_practice_answer(message, challenge, round_number, claimed_session):
+    discord_id = str(message.author.id)
+    username = message.author.display_name
+    channel_id = str(message.channel.id)
+    learner_answer = message.content.strip()
+
+    try:
+        await message.add_reaction("⏳")
+    except Exception:
+        pass
+
+    try:
+        history = db.get_recent_practice_attempts(discord_id, limit=5)
+        result = review_translation(
+            client_ai,
+            challenge,
+            learner_answer,
+            round_number,
+            history,
+        )
+        db.save_practice_attempt(
+            discord_id,
+            username,
+            round_number,
+            challenge,
+            learner_answer,
+            result,
+        )
+        next_round = round_number + 1
+        next_challenge = result["next_challenge"]
+        db.save_practice_session(
+            discord_id=discord_id,
+            username=username,
+            channel_id=channel_id,
+            round_number=next_round,
+            variant=next_challenge["variant"],
+            level=next_challenge["level"],
+            context=next_challenge["context"],
+            vietnamese_prompt=next_challenge["vietnamese_prompt"],
+        )
+        await send_long_message(
+            message.channel,
+            format_review_with_next(result, next_round),
+            reply_to=message,
+        )
+        try:
+            await message.add_reaction("✅")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"Practice grading failed for {username}: {e}")
+        if claimed_session:
+            try:
+                db.restore_practice_session(discord_id, channel_id)
+            except Exception as restore_error:
+                print(f"Could not restore practice session for {username}: {restore_error}")
+        await message.reply(
+            "Mình chưa chấm được bài này vì dịch vụ AI hoặc cơ sở dữ liệu đang lỗi. "
+            "Bạn hãy gửi lại câu trả lời sau nhé.",
+            mention_author=False,
+        )
+
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
-        return
-
-    if message.channel.name != TARGET_CHANNEL_NAME:
-        await bot.process_commands(message)
         return
 
     text = message.content.strip()
@@ -213,6 +325,26 @@ async def on_message(message: discord.Message):
         return
 
     if text.startswith(bot.command_prefix):
+        await bot.process_commands(message)
+        return
+
+    try:
+        practice_state = claim_practice_for_message(message, discord_id, channel_id)
+    except Exception as e:
+        print(f"Database error while resolving practice answer: {e}")
+        practice_state = None
+
+    if practice_state:
+        challenge, round_number, claimed_session = practice_state
+        await handle_practice_answer(
+            message,
+            challenge,
+            round_number,
+            claimed_session,
+        )
+        return
+
+    if getattr(message.channel, "name", None) != TARGET_CHANNEL_NAME:
         await bot.process_commands(message)
         return
 
@@ -498,6 +630,44 @@ async def vocab_cmd(ctx):
     """Manually trigger the next vocab drop (for testing)."""
     await send_word_batch(bot, client_ai, VOCAB_CHANNEL_NAME)
     await ctx.send("Vocab drop sent! 📚")
+
+
+@bot.hybrid_command(
+    name="practice",
+    description="Start a personalised Vietnamese-to-English translation round.",
+)
+async def practice_cmd(ctx):
+    """Start a practice round with either !practice or /practice."""
+    if getattr(ctx, "interaction", None):
+        await ctx.defer()
+
+    discord_id = str(ctx.author.id)
+    username = ctx.author.display_name
+    channel_id = str(ctx.channel.id)
+    try:
+        round_number = db.get_next_practice_round(discord_id)
+        history = db.get_recent_practice_attempts(discord_id, limit=5)
+        challenge = generate_challenge(client_ai, round_number, history)
+        db.save_practice_session(
+            discord_id=discord_id,
+            username=username,
+            channel_id=channel_id,
+            round_number=round_number,
+            variant=challenge["variant"],
+            level=challenge["level"],
+            context=challenge["context"],
+            vietnamese_prompt=challenge["vietnamese_prompt"],
+        )
+        await send_long_message(
+            ctx.channel,
+            format_challenge(challenge, round_number),
+        )
+    except Exception as e:
+        print(f"!practice command failed for {username}: {e}")
+        await ctx.send(
+            "Mình chưa tạo được bài luyện tập vì dịch vụ AI hoặc cơ sở dữ liệu đang lỗi. "
+            "Bạn thử lại sau nhé."
+        )
 
 
 @bot.hybrid_command(name="news", description="Manually trigger today's daily news briefing.")
