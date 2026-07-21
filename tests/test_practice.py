@@ -7,6 +7,7 @@ from unittest.mock import patch
 import practice as practice_module
 from practice import (
     _parse_send_hours,
+    create_practice_thread,
     format_challenge,
     format_review_with_next,
     generate_challenge,
@@ -42,9 +43,34 @@ class FakeMessage:
     def __init__(self, message_id=123):
         self.id = message_id
         self.reactions = []
+        self.thread = None
+        self.thread_options = None
 
     async def add_reaction(self, reaction):
         self.reactions.append(reaction)
+
+    async def create_thread(self, **kwargs):
+        self.thread_options = kwargs
+        self.thread = FakeThread(name=kwargs["name"])
+        return self.thread
+
+
+class FakeThread:
+    def __init__(self, name, thread_id=789):
+        self.name = name
+        self.id = thread_id
+        self.sent = []
+        self.messages = []
+        self.added_users = []
+
+    async def send(self, content):
+        self.sent.append(content)
+        message = FakeMessage(message_id=900 + len(self.messages))
+        self.messages.append(message)
+        return message
+
+    async def add_user(self, user):
+        self.added_users.append(user)
 
 
 class FakeChannel:
@@ -52,10 +78,13 @@ class FakeChannel:
         self.name = name
         self.id = channel_id
         self.sent = []
+        self.messages = []
 
     async def send(self, content):
         self.sent.append(content)
-        return FakeMessage()
+        message = FakeMessage(message_id=123 + len(self.messages))
+        self.messages.append(message)
+        return message
 
 
 class FakePracticeDB:
@@ -70,8 +99,11 @@ class FakePracticeDB:
 
 
 class PracticeTests(unittest.TestCase):
-    def test_default_local_send_hours_are_14_and_21(self):
-        self.assertEqual(_parse_send_hours("14,21"), (14, 21))
+    def test_default_local_send_hours_are_9_14_and_21(self):
+        self.assertEqual(_parse_send_hours("9,14,21"), (9, 14, 21))
+
+    def test_invalid_send_hours_fall_back_to_9_14_and_21(self):
+        self.assertEqual(_parse_send_hours("invalid"), (9, 14, 21))
 
     def test_generate_challenge_starts_with_british_english(self):
         client = FakeClient([
@@ -123,7 +155,7 @@ class PracticeTests(unittest.TestCase):
         self.assertIn("### Round 2 - 🇺🇸 American English", output)
         self.assertIn(next_challenge["vietnamese_prompt"], output)
 
-    def test_daily_format_requires_a_direct_reply(self):
+    def test_daily_format_requires_an_answer_in_the_thread(self):
         challenge = {
             "variant": "Australian English",
             "level": "Social / Intermediate",
@@ -134,7 +166,7 @@ class PracticeTests(unittest.TestCase):
         output = format_challenge(challenge, daily=True)
 
         self.assertIn("Daily Practice", output)
-        self.assertIn("Reply trực tiếp", output)
+        self.assertIn("trong thread này", output)
         self.assertNotIn("How has work", output)
 
     def test_long_feedback_is_split_under_discord_limit(self):
@@ -148,6 +180,20 @@ class PracticeTests(unittest.TestCase):
 
 
 class ScheduledPracticeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_thread_adds_participant_and_limits_its_name(self):
+        starter = FakeMessage()
+        participant = SimpleNamespace(id=42)
+
+        thread = await create_practice_thread(
+            starter,
+            name="P" * 120,
+            participant=participant,
+        )
+
+        self.assertEqual(len(starter.thread_options["name"]), 100)
+        self.assertEqual(starter.thread_options["auto_archive_duration"], 1440)
+        self.assertEqual(thread.added_users, [participant])
+
     async def test_scheduled_prompt_is_saved_and_not_posted_twice(self):
         challenge = {
             "variant": "British English",
@@ -181,8 +227,14 @@ class ScheduledPracticeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(first_send)
         self.assertFalse(duplicate_send)
         self.assertEqual(len(channel.sent), 1)
+        self.assertIn("@everyone", channel.sent[0])
+        thread = channel.messages[0].thread
+        self.assertIsNotNone(thread)
+        self.assertEqual(len(thread.sent), 1)
         self.assertEqual(len(fake_db.saved), 1)
-        self.assertIn("Reply trực tiếp", channel.sent[0])
+        self.assertEqual(fake_db.saved[0]["channel_id"], str(thread.id))
+        self.assertIn("trong thread này", thread.sent[0])
+        self.assertEqual(thread.messages[0].reactions, ["✍️"])
 
 
 if __name__ == "__main__":

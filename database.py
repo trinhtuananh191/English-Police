@@ -710,3 +710,20 @@ def get_scheduled_practice(prompt_message_id, channel_id):
     cur.close()
     conn.close()
     return row
+
+
+def get_scheduled_practice_for_thread(thread_id):
+    """Return the shared daily prompt hosted by a practice thread."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT variant, level, context, vietnamese_prompt
+        FROM scheduled_practice_prompts
+        WHERE channel_id = %s
+        ORDER BY created_at DESC
+        LIMIT 1
+    """, (thread_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
