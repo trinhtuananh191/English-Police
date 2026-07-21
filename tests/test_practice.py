@@ -7,9 +7,9 @@ from unittest.mock import patch
 import practice as practice_module
 from practice import (
     _parse_send_hours,
+    _random_hints,
     create_practice_thread,
     format_challenge,
-    format_review_with_next,
     format_thread_prompt,
     generate_challenge,
     review_translation,
@@ -93,9 +93,9 @@ class FakePracticeDB:
         self.saved = []
 
     def scheduled_practice_exists(self, schedule_key):
-        return any(row["schedule_key"] == schedule_key for row in self.saved)
+        return any(row["prompt_key"] == schedule_key for row in self.saved)
 
-    def save_scheduled_practice(self, **kwargs):
+    def save_practice_thread_prompt(self, **kwargs):
         self.saved.append(kwargs)
 
 
@@ -106,30 +106,31 @@ class PracticeTests(unittest.TestCase):
     def test_invalid_send_hours_fall_back_to_9_14_and_21(self):
         self.assertEqual(_parse_send_hours("invalid"), (9, 14, 21))
 
-    def test_generate_challenge_starts_with_british_english(self):
+    def test_generate_challenge_uses_random_variant_topic_and_level(self):
         client = FakeClient([
             {
-                "variant": "British English",
-                "level": "Casual / Everyday life",
-                "context": "Bạn đang rủ bạn đi uống cà phê.",
-                "vietnamese_prompt": "Chiều nay cậu có muốn đi uống cà phê không?",
+                "variant": "American English",
+                "level": "Advanced / Formal communication",
+                "context": "Bạn đang trình bày quan điểm về công nghệ.",
+                "vietnamese_prompt": "Theo tôi, công nghệ này cần được kiểm soát chặt chẽ hơn.",
             }
         ])
 
-        challenge = generate_challenge(client, round_number=1)
+        with patch.object(
+            practice_module.random,
+            "choice",
+            side_effect=["American English", "Công nghệ", "Advanced / Formal communication"],
+        ):
+            challenge = generate_challenge(client)
 
-        self.assertEqual(challenge["variant"], "British English")
-        self.assertIn("cà phê", challenge["vietnamese_prompt"])
+        self.assertEqual(challenge["variant"], "American English")
         request = client.chat.completions.calls[0]
         self.assertEqual(request["response_format"], {"type": "json_object"})
+        prompt = request["messages"][1]["content"]
+        self.assertIn("Required topic: Công nghệ", prompt)
+        self.assertIn("Required level: Advanced / Formal communication", prompt)
 
-    def test_review_keeps_feedback_separate_from_next_prompt(self):
-        next_challenge = {
-            "variant": "American English",
-            "level": "Workplace / Intermediate",
-            "context": "Bạn báo với đồng nghiệp rằng sẽ trễ cuộc họp.",
-            "vietnamese_prompt": "Nhắn giúp tôi là tôi sẽ đến muộn khoảng mười phút.",
-        }
+    def test_review_returns_feedback_without_another_exercise(self):
         client = FakeClient([
             {
                 "overall_score": 8,
@@ -139,7 +140,6 @@ class PracticeTests(unittest.TestCase):
                 "native_like_score": 7,
                 "error_summary": "Cần dùng collocation tự nhiên hơn.",
                 "feedback_markdown": "## Câu của tôi\n> Do you want drink coffee?\n\n# Điểm: 8/10",
-                "next_challenge": next_challenge,
             }
         ])
         challenge = {
@@ -150,11 +150,12 @@ class PracticeTests(unittest.TestCase):
         }
 
         result = review_translation(client, challenge, "Do you want drink coffee?", 1)
-        output = format_review_with_next(result, 2)
 
         self.assertEqual(result["overall_score"], 8.0)
-        self.assertIn("### Round 2 - 🇺🇸 American English", output)
-        self.assertIn(next_challenge["vietnamese_prompt"], output)
+        self.assertNotIn("next_challenge", result)
+        request_payload = client.chat.completions.calls[0]["messages"][1]["content"]
+        self.assertNotIn("next_topic_hint", request_payload)
+        self.assertNotIn("next_variant_hint", request_payload)
 
     def test_daily_format_requires_an_answer_in_the_thread(self):
         challenge = {
@@ -186,8 +187,21 @@ class PracticeTests(unittest.TestCase):
 
         self.assertIn("@everyone", output)
         self.assertIn("<@42>", output)
-        self.assertIn("### Round 1", output)
+        self.assertIn("### Practice", output)
         self.assertIn(challenge["vietnamese_prompt"], output)
+
+    def test_random_hints_select_all_three_dimensions(self):
+        with patch.object(
+            practice_module.random,
+            "choice",
+            side_effect=["Canadian English", "Du lịch", "Intermediate / Social conversation"],
+        ):
+            hints = _random_hints()
+
+        self.assertEqual(
+            hints,
+            ("Canadian English", "Du lịch", "Intermediate / Social conversation"),
+        )
 
     def test_long_feedback_is_split_under_discord_limit(self):
         content = ("Đoạn phản hồi dài. " * 250).strip()
@@ -256,6 +270,23 @@ class ScheduledPracticeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(fake_db.saved), 1)
         self.assertEqual(fake_db.saved[0]["channel_id"], str(thread.id))
         self.assertEqual(channel.messages[0].reactions, ["✍️"])
+
+    async def test_scheduler_does_nothing_outside_daily_hours(self):
+        client = FakeClient([])
+        channel = FakeChannel()
+        bot = SimpleNamespace(guilds=[SimpleNamespace(text_channels=[channel])])
+        local_now = datetime(2026, 7, 20, 10, 0)
+
+        sent = await send_scheduled_practice(
+            bot,
+            client,
+            "chat-en",
+            local_now,
+        )
+
+        self.assertFalse(sent)
+        self.assertEqual(channel.sent, [])
+        self.assertEqual(client.chat.completions.calls, [])
 
 
 if __name__ == "__main__":

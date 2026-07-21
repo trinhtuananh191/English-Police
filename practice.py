@@ -1,13 +1,14 @@
 """Vietnamese-to-English translation practice powered by OpenAI.
 
-The module owns challenge generation, detailed grading, Discord formatting, and
-the twice-daily shared practice drop. Per-user progress and shared prompt IDs are
-persisted by :mod:`database` so practice can continue after a bot restart.
+The module owns standalone challenge generation, detailed grading, Discord
+formatting, and scheduled shared practice drops. Thread prompts and per-user
+attempts are persisted by :mod:`database` so grading survives a bot restart.
 """
 
 import asyncio
 import json
 import os
+import random
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -53,7 +54,7 @@ COUNTRY_FLAGS = {
     "Canadian English": "🇨🇦",
 }
 
-TOPIC_ROTATION = [
+PRACTICE_TOPICS = [
     "Cuộc sống hằng ngày",
     "Công việc",
     "Bạn bè",
@@ -68,11 +69,19 @@ TOPIC_ROTATION = [
     "Formal communication",
 ]
 
-VARIANT_ROTATION = [
+PRACTICE_VARIANTS = [
     "British English",
     "American English",
     "Australian English",
     "Canadian English",
+]
+
+PRACTICE_LEVELS = [
+    "Beginner / Everyday life",
+    "Elementary / Everyday conversation",
+    "Intermediate / Social conversation",
+    "Upper-intermediate / Workplace",
+    "Advanced / Formal communication",
 ]
 
 CHALLENGE_SYSTEM_PROMPT = """You are an experienced native English teacher for Vietnamese learners.
@@ -83,7 +92,7 @@ Requirements:
 - Explicitly identify the English country variant, level/context label, and concrete conversation context.
 - Avoid translationese and design the exercise to teach natural collocations or sentence patterns.
 - Keep the Vietnamese prompt to one sentence or a short two-sentence paragraph.
-- Increase difficulty gradually when learner history shows strong performance.
+- Follow the requested topic and level. Each exercise is standalone; do not create a sequence.
 
 Return ONLY one JSON object with this schema:
 {
@@ -116,7 +125,7 @@ FEEDBACK_MARKDOWN bắt buộc có các phần sau, theo đúng thứ tự:
 11. "# Những cụm tôi nên lưu lại": chọn 3-6 cụm hữu ích, mỗi cụm có nghĩa, câu ví dụ và bản dịch.
 12. "# Phiên bản casual/native nâng cao" nếu phù hợp; giải thích từ/cụm mới quan trọng, gồm từ loại và IPA khi là từ vựng mới.
 
-Không được chép lại bài tiếp theo vào feedback_markdown. Bài tiếp theo nằm riêng trong next_challenge, phải luân phiên chủ đề và điều chỉnh độ khó dựa trên bài hiện tại cùng lịch sử gần đây. Không đưa đáp án tiếng Anh của bài tiếp theo.
+Không được tạo, đề xuất hoặc chép thêm bài tập tiếp theo. Chỉ chấm đúng câu trả lời hiện tại.
 
 Return ONLY one valid JSON object with this schema:
 {
@@ -125,14 +134,8 @@ Return ONLY one valid JSON object with this schema:
   "vocabulary_score": 7,
   "naturalness_score": 7,
   "native_like_score": 6.5,
-  "error_summary": "Tóm tắt ngắn các lỗi để điều chỉnh bài sau",
-  "feedback_markdown": "Nội dung chấm chi tiết bằng Markdown",
-  "next_challenge": {
-    "variant": "American English",
-    "level": "Workplace / Intermediate",
-    "context": "Mô tả ngắn bằng tiếng Việt",
-    "vietnamese_prompt": "Câu tiếng Việt mới cần dịch"
-  }
+  "error_summary": "Tóm tắt ngắn các lỗi",
+  "feedback_markdown": "Nội dung chấm chi tiết bằng Markdown"
 }
 """
 
@@ -177,26 +180,23 @@ def _score(value) -> float:
 
 def generate_challenge(
     client_ai: OpenAI,
-    round_number: int,
+    round_number: int = 1,
     recent_history: Optional[list] = None,
     variant_hint: Optional[str] = None,
     topic_hint: Optional[str] = None,
+    level_hint: Optional[str] = None,
 ) -> dict:
-    """Generate one translation prompt without revealing its English answer."""
-    recent_history = recent_history or []
-    if round_number <= 1 and not variant_hint:
-        variant_hint = "British English"
-    variant_hint = variant_hint or VARIANT_ROTATION[(round_number - 1) % len(VARIANT_ROTATION)]
-    topic_hint = topic_hint or TOPIC_ROTATION[(round_number - 1) % len(TOPIC_ROTATION)]
+    """Generate one standalone prompt with a random topic and level by default."""
+    variant_hint = variant_hint or random.choice(PRACTICE_VARIANTS)
+    topic_hint = topic_hint or random.choice(PRACTICE_TOPICS)
+    level_hint = level_hint or random.choice(PRACTICE_LEVELS)
 
-    history_payload = [dict(row) for row in recent_history[:5]]
     user_prompt = (
-        f"Create Round {round_number}.\n"
+        "Create one standalone exercise.\n"
         f"Preferred variant: {variant_hint}\n"
-        f"Topic to use next: {topic_hint}\n"
-        f"Recent learner history (newest first): "
-        f"{json.dumps(history_payload, ensure_ascii=False, default=str)}\n"
-        "For a learner with no history, start at Casual / Everyday life. Return JSON only."
+        f"Required topic: {topic_hint}\n"
+        f"Required level: {level_hint}\n"
+        "Do not include an answer or another exercise. Return JSON only."
     )
     response = client_ai.chat.completions.create(
         model=PRACTICE_MODEL,
@@ -218,7 +218,7 @@ def review_translation(
     round_number: int,
     recent_history: Optional[list] = None,
 ) -> dict:
-    """Grade one answer and return structured feedback plus the next challenge."""
+    """Grade one answer and return feedback without generating another exercise."""
     recent_history = recent_history or []
     history_payload = [dict(row) for row in recent_history[:5]]
     user_payload = {
@@ -226,8 +226,6 @@ def review_translation(
         "challenge": challenge,
         "learner_answer_verbatim": learner_answer,
         "recent_history_newest_first": history_payload,
-        "next_topic_hint": TOPIC_ROTATION[round_number % len(TOPIC_ROTATION)],
-        "next_variant_hint": VARIANT_ROTATION[round_number % len(VARIANT_ROTATION)],
     }
     response = client_ai.chat.completions.create(
         model=PRACTICE_MODEL,
@@ -256,10 +254,6 @@ def review_translation(
         "native_like_score": _score(payload.get("native_like_score")),
         "error_summary": str(payload.get("error_summary") or "").strip(),
         "feedback_markdown": feedback,
-        "next_challenge": _normalise_challenge(
-            payload.get("next_challenge") or {},
-            VARIANT_ROTATION[round_number % len(VARIANT_ROTATION)],
-        ),
     }
 
 
@@ -271,14 +265,14 @@ def format_challenge(
     """Format a challenge without exposing an English model answer."""
     variant = challenge["variant"]
     flag = COUNTRY_FLAGS.get(variant, "🌍")
-    title = "Daily Practice" if daily else f"Round {round_number or 1}"
+    title = "Daily Practice" if daily else "Practice"
     instructions = "Gửi bản dịch tiếng Anh của bạn trong thread này."
     return (
         f"### {title} - {flag} {variant}\n\n"
         f"**Level:** {challenge['level']}\n"
         f"**Context:** {challenge['context']}\n\n"
         f"{challenge['vietnamese_prompt']}\n\n"
-        f"_{instructions} Bot sẽ chấm chi tiết và đưa bài tiếp theo._"
+        f"_{instructions} Bot sẽ chấm chi tiết bài này._"
     )
 
 
@@ -292,14 +286,6 @@ def format_thread_prompt(
     return (
         f"@everyone 🧵 **{announcement}**\n\n"
         f"{format_challenge(challenge, round_number=round_number, daily=daily)}"
-    )
-
-
-def format_review_with_next(result: dict, next_round_number: int) -> str:
-    return (
-        f"{result['feedback_markdown'].rstrip()}\n\n"
-        f"---\n\n"
-        f"{format_challenge(result['next_challenge'], next_round_number)}"
     )
 
 
@@ -347,12 +333,12 @@ async def create_practice_thread(starter_message, name: str, participant=None):
     return thread
 
 
-def _daily_hints(local_now: datetime) -> tuple[str, str]:
-    slot_index = PRACTICE_SEND_HOURS_LOCAL.index(local_now.hour)
-    rotation_index = local_now.date().toordinal() * len(PRACTICE_SEND_HOURS_LOCAL) + slot_index
-    topic = TOPIC_ROTATION[rotation_index % len(TOPIC_ROTATION)]
-    variant = VARIANT_ROTATION[rotation_index % len(VARIANT_ROTATION)]
-    return variant, topic
+def _random_hints() -> tuple[str, str, str]:
+    return (
+        random.choice(PRACTICE_VARIANTS),
+        random.choice(PRACTICE_TOPICS),
+        random.choice(PRACTICE_LEVELS),
+    )
 
 
 async def send_scheduled_practice(bot, client_ai: OpenAI, channel_name: str, local_now=None) -> bool:
@@ -383,13 +369,14 @@ async def send_scheduled_practice(bot, client_ai: OpenAI, channel_name: str, loc
         print(f"⚠️ Practice channel '#{channel_name}' not found.")
         return False
 
-    variant_hint, topic_hint = _daily_hints(local_now)
+    variant_hint, topic_hint, level_hint = _random_hints()
     challenge = await asyncio.to_thread(
         generate_challenge,
         client_ai,
         round_number=1,
         variant_hint=variant_hint,
         topic_hint=topic_hint,
+        level_hint=level_hint,
     )
     starter = await practice_channel.send(
         format_thread_prompt(
@@ -407,8 +394,8 @@ async def send_scheduled_practice(bot, client_ai: OpenAI, channel_name: str, loc
     except Exception:
         pass
 
-    database.save_scheduled_practice(
-        schedule_key=schedule_key,
+    database.save_practice_thread_prompt(
+        prompt_key=schedule_key,
         prompt_message_id=str(starter.id),
         channel_id=str(thread.id),
         variant=challenge["variant"],

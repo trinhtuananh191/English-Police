@@ -139,7 +139,7 @@ def init_db():
         );
     """)
 
-    # Shared 14:00/21:00 prompts are looked up by Discord reply message ID.
+    # One shared exercise per Discord thread, created manually or by the daily schedule.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS scheduled_practice_prompts (
             id SERIAL PRIMARY KEY,
@@ -677,8 +677,9 @@ def scheduled_practice_exists(schedule_key):
     return exists
 
 
-def save_scheduled_practice(schedule_key, prompt_message_id, channel_id,
-                            variant, level, context, vietnamese_prompt):
+def save_practice_thread_prompt(prompt_key, prompt_message_id, channel_id,
+                                variant, level, context, vietnamese_prompt):
+    """Persist the one shared exercise associated with a Discord thread."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -689,7 +690,7 @@ def save_scheduled_practice(schedule_key, prompt_message_id, channel_id,
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (schedule_key) DO NOTHING
     """, (
-        schedule_key, prompt_message_id, channel_id, variant, level, context,
+        prompt_key, prompt_message_id, channel_id, variant, level, context,
         vietnamese_prompt,
     ))
     conn.commit()
@@ -712,8 +713,8 @@ def get_scheduled_practice(prompt_message_id, channel_id):
     return row
 
 
-def get_scheduled_practice_for_thread(thread_id):
-    """Return the shared daily prompt hosted by a practice thread."""
+def get_practice_thread_prompt(thread_id):
+    """Return the one shared exercise hosted by a practice thread."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
