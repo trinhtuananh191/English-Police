@@ -12,8 +12,8 @@ from cefr import estimate_cefr_level
 from news_scheduler import NEWS_SEND_HOUR_UTC, send_daily_news
 from practice import (
     PRACTICE_SEND_HOURS_LOCAL,
-    format_challenge,
     format_review_with_next,
+    format_thread_prompt,
     generate_challenge,
     review_translation,
     create_practice_thread,
@@ -653,31 +653,43 @@ async def practice_cmd(ctx):
         )
         return
 
-    if getattr(ctx, "interaction", None):
-        await ctx.defer()
+    interaction = getattr(ctx, "interaction", None)
+    if interaction:
+        await ctx.defer(ephemeral=True)
 
     discord_id = str(ctx.author.id)
     username = ctx.author.display_name
     thread = None
+    phase = "đọc tiến độ từ cơ sở dữ liệu"
     try:
         round_number = db.get_next_practice_round(discord_id)
         history = db.get_recent_practice_attempts(discord_id, limit=5)
-        starter = await ctx.send(
-            f"@everyone 🧵 Bài luyện tập của {ctx.author.mention} "
-            "đang được chuẩn bị trong thread này."
-        )
-        thread = await create_practice_thread(
-            starter,
-            name=f"Practice - {username} - Round {round_number}",
-            participant=ctx.author,
-        )
-        await thread.send("⏳ Đang tạo đề bài phù hợp với tiến độ của bạn...")
+
+        phase = "tạo đề bằng AI"
         challenge = await asyncio.to_thread(
             generate_challenge,
             client_ai,
             round_number,
             history,
         )
+
+        phase = "gửi đề lên Discord"
+        starter = await ctx.channel.send(
+            format_thread_prompt(
+                challenge,
+                round_number=round_number,
+                announcement=f"Bài luyện tập của {ctx.author.mention}",
+            )
+        )
+
+        phase = "tạo Discord thread"
+        thread = await create_practice_thread(
+            starter,
+            name=f"Practice - {username} - Round {round_number}",
+            participant=ctx.author,
+        )
+
+        phase = "lưu phiên luyện tập vào cơ sở dữ liệu"
         db.save_practice_session(
             discord_id=discord_id,
             username=username,
@@ -688,16 +700,30 @@ async def practice_cmd(ctx):
             context=challenge["context"],
             vietnamese_prompt=challenge["vietnamese_prompt"],
         )
-        await send_long_message(
-            thread,
-            format_challenge(challenge, round_number),
-        )
+
+        if interaction:
+            try:
+                await ctx.send(f"Đã tạo bài luyện tập tại {thread.mention}", ephemeral=True)
+            except Exception as confirmation_error:
+                print(
+                    "Could not send private practice confirmation: "
+                    f"{type(confirmation_error).__name__}: {confirmation_error}"
+                )
     except Exception as e:
-        print(f"!practice command failed for {username}: {e}")
-        destination = thread or ctx
-        await destination.send(
-            "Mình chưa tạo được bài luyện tập vì dịch vụ AI hoặc cơ sở dữ liệu đang lỗi. "
-            "Bạn thử lại sau nhé."
+        print(
+            f"!practice failed for {username} during '{phase}': "
+            f"{type(e).__name__}: {e}"
+        )
+        permission_hint = (
+            " Bot đang thiếu quyền **Create Public Threads** hoặc "
+            "**Send Messages in Threads**."
+            if isinstance(e, discord.Forbidden)
+            else ""
+        )
+        await ctx.send(
+            f"Mình chưa tạo được bài luyện tập ở bước **{phase}**."
+            f"{permission_hint} Quản trị viên hãy kiểm tra log Railway.",
+            ephemeral=bool(interaction),
         )
 
 

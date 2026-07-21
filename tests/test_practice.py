@@ -10,6 +10,7 @@ from practice import (
     create_practice_thread,
     format_challenge,
     format_review_with_next,
+    format_thread_prompt,
     generate_challenge,
     review_translation,
     send_scheduled_practice,
@@ -169,6 +170,25 @@ class PracticeTests(unittest.TestCase):
         self.assertIn("trong thread này", output)
         self.assertNotIn("How has work", output)
 
+    def test_thread_prompt_combines_everyone_mention_and_challenge(self):
+        challenge = {
+            "variant": "British English",
+            "level": "Casual / Everyday life",
+            "context": "Rủ bạn đi uống cà phê.",
+            "vietnamese_prompt": "Cậu có muốn đi uống cà phê không?",
+        }
+
+        output = format_thread_prompt(
+            challenge,
+            round_number=1,
+            announcement="Bài luyện tập của <@42>",
+        )
+
+        self.assertIn("@everyone", output)
+        self.assertIn("<@42>", output)
+        self.assertIn("### Round 1", output)
+        self.assertIn(challenge["vietnamese_prompt"], output)
+
     def test_long_feedback_is_split_under_discord_limit(self):
         content = ("Đoạn phản hồi dài. " * 250).strip()
 
@@ -228,13 +248,14 @@ class ScheduledPracticeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(duplicate_send)
         self.assertEqual(len(channel.sent), 1)
         self.assertIn("@everyone", channel.sent[0])
+        self.assertIn("Daily Practice", channel.sent[0])
+        self.assertIn(challenge["vietnamese_prompt"], channel.sent[0])
         thread = channel.messages[0].thread
         self.assertIsNotNone(thread)
-        self.assertEqual(len(thread.sent), 1)
+        self.assertEqual(len(thread.sent), 0)
         self.assertEqual(len(fake_db.saved), 1)
         self.assertEqual(fake_db.saved[0]["channel_id"], str(thread.id))
-        self.assertIn("trong thread này", thread.sent[0])
-        self.assertEqual(thread.messages[0].reactions, ["✍️"])
+        self.assertEqual(channel.messages[0].reactions, ["✍️"])
 
 
 if __name__ == "__main__":

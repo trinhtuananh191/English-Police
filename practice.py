@@ -282,6 +282,19 @@ def format_challenge(
     )
 
 
+def format_thread_prompt(
+    challenge: dict,
+    round_number: Optional[int] = None,
+    daily: bool = False,
+    announcement: str = "English Practice",
+) -> str:
+    """Combine the everyone mention and exercise into one thread starter message."""
+    return (
+        f"@everyone 🧵 **{announcement}**\n\n"
+        f"{format_challenge(challenge, round_number=round_number, daily=daily)}"
+    )
+
+
 def format_review_with_next(result: dict, next_round_number: int) -> str:
     return (
         f"{result['feedback_markdown'].rstrip()}\n\n"
@@ -379,22 +392,24 @@ async def send_scheduled_practice(bot, client_ai: OpenAI, channel_name: str, loc
         topic_hint=topic_hint,
     )
     starter = await practice_channel.send(
-        f"@everyone 🧵 **Daily Practice {local_now.strftime('%d/%m - %H:%M')}** — "
-        "mở thread để làm bài."
+        format_thread_prompt(
+            challenge,
+            daily=True,
+            announcement=f"Daily Practice {local_now.strftime('%d/%m - %H:%M')}",
+        )
     )
     thread = await create_practice_thread(
         starter,
         name=f"Daily Practice - {local_now.strftime('%d-%m %Hh')}",
     )
-    message = await thread.send(format_challenge(challenge, daily=True))
     try:
-        await message.add_reaction("✍️")
+        await starter.add_reaction("✍️")
     except Exception:
         pass
 
     database.save_scheduled_practice(
         schedule_key=schedule_key,
-        prompt_message_id=str(message.id),
+        prompt_message_id=str(starter.id),
         channel_id=str(thread.id),
         variant=challenge["variant"],
         level=challenge["level"],
