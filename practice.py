@@ -5,6 +5,7 @@ the twice-daily shared practice drop. Per-user progress and shared prompt IDs ar
 persisted by :mod:`database` so practice can continue after a bot restart.
 """
 
+import asyncio
 import json
 import os
 from datetime import datetime
@@ -29,12 +30,12 @@ def _parse_send_hours(value: str) -> tuple[int, ...]:
             raise ValueError
         return hours
     except (TypeError, ValueError):
-        print(f"Invalid PRACTICE_SEND_HOURS_LOCAL '{value}', falling back to 14,21.")
-        return (14, 21)
+        print(f"Invalid PRACTICE_SEND_HOURS_LOCAL '{value}', falling back to 9,14,21.")
+        return (9, 14, 21)
 
 
 PRACTICE_SEND_HOURS_LOCAL = _parse_send_hours(
-    os.getenv("PRACTICE_SEND_HOURS_LOCAL", "14,21")
+    os.getenv("PRACTICE_SEND_HOURS_LOCAL", "9,14,21")
 )
 
 
@@ -271,11 +272,7 @@ def format_challenge(
     variant = challenge["variant"]
     flag = COUNTRY_FLAGS.get(variant, "🌍")
     title = "Daily Practice" if daily else f"Round {round_number or 1}"
-    instructions = (
-        "Reply trực tiếp vào tin nhắn này bằng bản dịch tiếng Anh của bạn."
-        if daily
-        else "Gửi bản dịch tiếng Anh của bạn trong tin nhắn tiếp theo."
-    )
+    instructions = "Gửi bản dịch tiếng Anh của bạn trong thread này."
     return (
         f"### {title} - {flag} {variant}\n\n"
         f"**Level:** {challenge['level']}\n"
@@ -322,6 +319,21 @@ async def send_long_message(channel, content: str, reply_to=None):
             await channel.send(chunk)
 
 
+async def create_practice_thread(starter_message, name: str, participant=None):
+    """Create a public practice thread and add its intended participant when possible."""
+    thread = await starter_message.create_thread(
+        name=name[:100],
+        auto_archive_duration=1440,
+        reason="English translation practice",
+    )
+    if participant is not None:
+        try:
+            await thread.add_user(participant)
+        except Exception as exc:
+            print(f"Could not add practice participant to thread: {exc}")
+    return thread
+
+
 def _daily_hints(local_now: datetime) -> tuple[str, str]:
     slot_index = PRACTICE_SEND_HOURS_LOCAL.index(local_now.hour)
     rotation_index = local_now.date().toordinal() * len(PRACTICE_SEND_HOURS_LOCAL) + slot_index
@@ -359,13 +371,22 @@ async def send_scheduled_practice(bot, client_ai: OpenAI, channel_name: str, loc
         return False
 
     variant_hint, topic_hint = _daily_hints(local_now)
-    challenge = generate_challenge(
+    challenge = await asyncio.to_thread(
+        generate_challenge,
         client_ai,
         round_number=1,
         variant_hint=variant_hint,
         topic_hint=topic_hint,
     )
-    message = await practice_channel.send(format_challenge(challenge, daily=True))
+    starter = await practice_channel.send(
+        f"@everyone 🧵 **Daily Practice {local_now.strftime('%d/%m - %H:%M')}** — "
+        "mở thread để làm bài."
+    )
+    thread = await create_practice_thread(
+        starter,
+        name=f"Daily Practice - {local_now.strftime('%d-%m %Hh')}",
+    )
+    message = await thread.send(format_challenge(challenge, daily=True))
     try:
         await message.add_reaction("✍️")
     except Exception:
@@ -374,7 +395,7 @@ async def send_scheduled_practice(bot, client_ai: OpenAI, channel_name: str, loc
     database.save_scheduled_practice(
         schedule_key=schedule_key,
         prompt_message_id=str(message.id),
-        channel_id=str(practice_channel.id),
+        channel_id=str(thread.id),
         variant=challenge["variant"],
         level=challenge["level"],
         context=challenge["context"],

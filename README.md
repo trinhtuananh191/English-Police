@@ -9,8 +9,8 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 - **Vocabulary tracker** — automatically saves new words/phrases the bot notices in your messages.
 - **Vocab drops** — posts AI-generated vocabulary batches in `#vocab-drop`.
 - **Daily news briefing** — posts GNews-based Tech/AI/Design/Dev article summaries in `#daily-news` at 09:00 Vietnam time.
-- **Adaptive translation practice** — `!practice` starts a Vietnamese-to-English exercise, grades the learner in detail, and continues with a personalised next round.
-- **Daily practice prompts** — posts shared exercises at 14:00 and 21:00 in the configured practice channel; learners reply directly to the prompt to receive feedback.
+- **Adaptive translation practice** — `/practice` creates a dedicated thread for a Vietnamese-to-English exercise, grades the learner there, and continues with a personalised next round in the same thread.
+- **Daily practice prompts** — mentions everyone and creates shared exercise threads at 09:00, 14:00, and 21:00 in the configured practice channel; learners answer inside the thread to receive feedback.
 - **Deploy announcement** — automatically announces successful new-feature deploys once per deploy.
 - **Daily stats report** — posted automatically every day in `#daily-report`: message count, error rate, new vocab learned per person. Each report covers the last 24 hours so messages after the previous report are not missed.
 - **CEFR level estimate** — updated daily based on recent messages, check yours with `!level`.
@@ -32,7 +32,7 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 - `VOCAB_CHANNEL_NAME` — (optional) channel for vocabulary drops, default `vocab-drop`
 - `NEWS_CHANNEL_NAME` — (optional) channel for daily news, default `daily-news`
 - `PRACTICE_CHANNEL_NAME` — (optional) channel for scheduled practice, default uses `TARGET_CHANNEL_NAME`
-- `PRACTICE_SEND_HOURS_LOCAL` — (optional) comma-separated local hours for practice drops, default `14,21`
+- `PRACTICE_SEND_HOURS_LOCAL` — (optional) comma-separated local hours for practice drops, default `9,14,21`
 - `PRACTICE_MODEL` — (optional) OpenAI model used for practice generation and grading, default `gpt-4o-mini`
 - `DISCORD_GUILD_ID` — (optional) sync slash commands to one Discord server immediately instead of global sync
 - `SYNC_SLASH_COMMANDS` — (optional) set to `false` to disable slash command syncing on startup
@@ -46,8 +46,8 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 ## Setup notes
 1. In your Discord server, create channels for `chat-en` (or your custom name), `daily-report`, `vocab-drop`, and `daily-news`. Scheduled practice uses `chat-en` by default; set `PRACTICE_CHANNEL_NAME` if you want a separate channel.
 2. In Railway, click **"New"** → **"Database"** → **"Add PostgreSQL"** to attach a database to this project. Railway will automatically inject `DATABASE_URL` into your bot's environment variables — you don't need to set it manually.
-3. Make sure "Message Content Intent" is enabled in the Discord Developer Portal (under the Bot section).
+3. Make sure "Message Content Intent" is enabled in the Discord Developer Portal (under the Bot section). Grant the bot **Mention Everyone**, **Create Public Threads**, and **Send Messages in Threads** permissions for the practice channel.
 4. Deploy as usual — the bot will auto-create its database tables on first run.
 5. No command is needed for deploy announcements. When a new deploy starts successfully, the bot posts the configured message once for that deploy. Railway provides `RAILWAY_DEPLOYMENT_ID` automatically, so `DEPLOY_ANNOUNCE_KEY` is only needed on hosts without a deploy/commit id.
 6. Use `/news` to manually trigger the news briefing. Global slash commands can take time to appear; set `DISCORD_GUILD_ID` for immediate server-level sync during testing.
-7. For a scheduled practice prompt, learners must use Discord's **Reply** action on that prompt. For a personalised `!practice` round, their next non-command message in the same channel is treated as the answer.
+7. Run `/practice` in the main practice channel, then answer inside the thread created by the bot. Scheduled prompts also have their own thread; messages in the main channel are never consumed as practice answers.

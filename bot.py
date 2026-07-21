@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime, timezone
 
@@ -15,6 +16,7 @@ from practice import (
     format_review_with_next,
     generate_challenge,
     review_translation,
+    create_practice_thread,
     send_long_message,
     send_scheduled_practice,
 )
@@ -235,22 +237,19 @@ def challenge_from_row(row):
     }
 
 
-def claim_practice_for_message(message, discord_id, channel_id):
-    """Resolve a shared-prompt reply first, then a personalised active round."""
-    reference = getattr(message, "reference", None)
-    prompt_message_id = getattr(reference, "message_id", None)
-    if prompt_message_id:
-        scheduled = db.get_scheduled_practice(str(prompt_message_id), channel_id)
-        if scheduled:
-            return (
-                challenge_from_row(scheduled),
-                db.get_next_practice_round(discord_id),
-                False,
-            )
-
+def claim_practice_for_message(discord_id, channel_id):
+    """Resolve a personalised round or the shared prompt for this thread."""
     session = db.claim_practice_session(discord_id, channel_id)
     if session:
         return challenge_from_row(session), int(session["round_number"]), True
+
+    scheduled = db.get_scheduled_practice_for_thread(channel_id)
+    if scheduled:
+        return (
+            challenge_from_row(scheduled),
+            db.get_next_practice_round(discord_id),
+            False,
+        )
     return None
 
 
@@ -267,7 +266,8 @@ async def handle_practice_answer(message, challenge, round_number, claimed_sessi
 
     try:
         history = db.get_recent_practice_attempts(discord_id, limit=5)
-        result = review_translation(
+        result = await asyncio.to_thread(
+            review_translation,
             client_ai,
             challenge,
             learner_answer,
@@ -335,11 +335,12 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    try:
-        practice_state = claim_practice_for_message(message, discord_id, channel_id)
-    except Exception as e:
-        print(f"Database error while resolving practice answer: {e}")
-        practice_state = None
+    practice_state = None
+    if isinstance(message.channel, discord.Thread):
+        try:
+            practice_state = claim_practice_for_message(discord_id, channel_id)
+        except Exception as e:
+            print(f"Database error while resolving practice answer: {e}")
 
     if practice_state:
         challenge, round_number, claimed_session = practice_state
@@ -645,20 +646,42 @@ async def vocab_cmd(ctx):
 )
 async def practice_cmd(ctx):
     """Start a practice round with either !practice or /practice."""
+    if not isinstance(ctx.channel, discord.TextChannel):
+        await ctx.send(
+            "Hãy chạy `/practice` trong một kênh chữ chính. "
+            "Sau đó trả lời bài tập trong thread mà bot tạo ra."
+        )
+        return
+
     if getattr(ctx, "interaction", None):
         await ctx.defer()
 
     discord_id = str(ctx.author.id)
     username = ctx.author.display_name
-    channel_id = str(ctx.channel.id)
+    thread = None
     try:
         round_number = db.get_next_practice_round(discord_id)
         history = db.get_recent_practice_attempts(discord_id, limit=5)
-        challenge = generate_challenge(client_ai, round_number, history)
+        starter = await ctx.send(
+            f"@everyone 🧵 Bài luyện tập của {ctx.author.mention} "
+            "đang được chuẩn bị trong thread này."
+        )
+        thread = await create_practice_thread(
+            starter,
+            name=f"Practice - {username} - Round {round_number}",
+            participant=ctx.author,
+        )
+        await thread.send("⏳ Đang tạo đề bài phù hợp với tiến độ của bạn...")
+        challenge = await asyncio.to_thread(
+            generate_challenge,
+            client_ai,
+            round_number,
+            history,
+        )
         db.save_practice_session(
             discord_id=discord_id,
             username=username,
-            channel_id=channel_id,
+            channel_id=str(thread.id),
             round_number=round_number,
             variant=challenge["variant"],
             level=challenge["level"],
@@ -666,12 +689,13 @@ async def practice_cmd(ctx):
             vietnamese_prompt=challenge["vietnamese_prompt"],
         )
         await send_long_message(
-            ctx.channel,
+            thread,
             format_challenge(challenge, round_number),
         )
     except Exception as e:
         print(f"!practice command failed for {username}: {e}")
-        await ctx.send(
+        destination = thread or ctx
+        await destination.send(
             "Mình chưa tạo được bài luyện tập vì dịch vụ AI hoặc cơ sở dữ liệu đang lỗi. "
             "Bạn thử lại sau nhé."
         )
