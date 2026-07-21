@@ -9,8 +9,8 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 - **Vocabulary tracker** — automatically saves new words/phrases the bot notices in your messages.
 - **Vocab drops** — posts AI-generated vocabulary batches in `#vocab-drop`.
 - **Daily news briefing** — posts GNews-based Tech/AI/Design/Dev article summaries in `#daily-news` at 09:00 Vietnam time.
-- **Adaptive translation practice** — `/practice` creates a dedicated thread for a Vietnamese-to-English exercise, grades the learner there, and continues with a personalised next round in the same thread.
-- **Daily practice prompts** — mentions everyone and creates shared exercise threads at 09:00, 14:00, and 21:00 in the configured practice channel; learners answer inside the thread to receive feedback.
+- **Shared translation practice** — `/practice` creates one thread with one randomly selected Vietnamese-to-English exercise; multiple learners can answer and receive tagged feedback in that thread.
+- **Daily practice prompts** — mentions everyone and creates one-exercise threads at 09:00, 14:00, and 21:00 in the configured practice channel. No exercise is created automatically outside those times.
 - **Deploy announcement** — automatically announces successful new-feature deploys once per deploy.
 - **Daily stats report** — posted automatically every day in `#daily-report`: message count, error rate, new vocab learned per person. Each report covers the last 24 hours so messages after the previous report are not missed.
 - **CEFR level estimate** — updated daily based on recent messages, check yours with `!level`.
@@ -19,7 +19,7 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 - `!level` — show your latest estimated CEFR level
 - `!report` — manually trigger today's report (for testing)
 - `!vocab` — manually trigger the current vocab drop window
-- `!practice` or `/practice` — start a personalised Vietnamese-to-English translation round
+- `!practice` or `/practice` — create one shared Vietnamese-to-English exercise thread
 - `!news` or `/news` — manually trigger today's daily news briefing
 
 ## Required Environment Variables (set in Railway)
@@ -50,4 +50,4 @@ A Discord bot that automatically corrects grammar, suggests natural rewrites, tr
 4. Deploy as usual — the bot will auto-create its database tables on first run.
 5. No command is needed for deploy announcements. When a new deploy starts successfully, the bot posts the configured message once for that deploy. Railway provides `RAILWAY_DEPLOYMENT_ID` automatically, so `DEPLOY_ANNOUNCE_KEY` is only needed on hosts without a deploy/commit id.
 6. Use `/news` to manually trigger the news briefing. Global slash commands can take time to appear; set `DISCORD_GUILD_ID` for immediate server-level sync during testing.
-7. Run `/practice` in the main practice channel, then answer inside the thread created by the bot. Scheduled prompts also have their own thread; messages in the main channel are never consumed as practice answers.
+7. Run `/practice` in the main practice channel, then answer inside the thread created by the bot. Each thread contains one random topic/level and never generates another exercise after grading. Scheduled prompts also have their own thread; messages in the main channel are never consumed as practice answers.

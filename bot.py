@@ -12,7 +12,6 @@ from cefr import estimate_cefr_level
 from news_scheduler import NEWS_SEND_HOUR_UTC, send_daily_news
 from practice import (
     PRACTICE_SEND_HOURS_LOCAL,
-    format_review_with_next,
     format_thread_prompt,
     generate_challenge,
     review_translation,
@@ -237,26 +236,20 @@ def challenge_from_row(row):
     }
 
 
-def claim_practice_for_message(discord_id, channel_id):
-    """Resolve a personalised round or the shared prompt for this thread."""
-    session = db.claim_practice_session(discord_id, channel_id)
-    if session:
-        return challenge_from_row(session), int(session["round_number"]), True
-
-    scheduled = db.get_scheduled_practice_for_thread(channel_id)
-    if scheduled:
+def get_practice_for_message(discord_id, channel_id):
+    """Resolve the one shared exercise associated with this thread."""
+    prompt = db.get_practice_thread_prompt(channel_id)
+    if prompt:
         return (
-            challenge_from_row(scheduled),
+            challenge_from_row(prompt),
             db.get_next_practice_round(discord_id),
-            False,
         )
     return None
 
 
-async def handle_practice_answer(message, challenge, round_number, claimed_session):
+async def handle_practice_answer(message, challenge, attempt_number):
     discord_id = str(message.author.id)
     username = message.author.display_name
-    channel_id = str(message.channel.id)
     learner_answer = message.content.strip()
 
     try:
@@ -271,32 +264,20 @@ async def handle_practice_answer(message, challenge, round_number, claimed_sessi
             client_ai,
             challenge,
             learner_answer,
-            round_number,
+            attempt_number,
             history,
         )
         db.save_practice_attempt(
             discord_id,
             username,
-            round_number,
+            attempt_number,
             challenge,
             learner_answer,
             result,
         )
-        next_round = round_number + 1
-        next_challenge = result["next_challenge"]
-        db.save_practice_session(
-            discord_id=discord_id,
-            username=username,
-            channel_id=channel_id,
-            round_number=next_round,
-            variant=next_challenge["variant"],
-            level=next_challenge["level"],
-            context=next_challenge["context"],
-            vietnamese_prompt=next_challenge["vietnamese_prompt"],
-        )
         await send_long_message(
             message.channel,
-            format_review_with_next(result, next_round),
+            f"{message.author.mention}\n\n{result['feedback_markdown']}",
             reply_to=message,
         )
         try:
@@ -305,13 +286,9 @@ async def handle_practice_answer(message, challenge, round_number, claimed_sessi
             pass
     except Exception as e:
         print(f"Practice grading failed for {username}: {e}")
-        if claimed_session:
-            try:
-                db.restore_practice_session(discord_id, channel_id)
-            except Exception as restore_error:
-                print(f"Could not restore practice session for {username}: {restore_error}")
         await message.reply(
-            "Mình chưa chấm được bài này vì dịch vụ AI hoặc cơ sở dữ liệu đang lỗi. "
+            f"{message.author.mention} Mình chưa chấm được bài này vì dịch vụ AI "
+            "hoặc cơ sở dữ liệu đang lỗi. "
             "Bạn hãy gửi lại câu trả lời sau nhé.",
             mention_author=False,
         )
@@ -338,17 +315,16 @@ async def on_message(message: discord.Message):
     practice_state = None
     if isinstance(message.channel, discord.Thread):
         try:
-            practice_state = claim_practice_for_message(discord_id, channel_id)
+            practice_state = get_practice_for_message(discord_id, channel_id)
         except Exception as e:
             print(f"Database error while resolving practice answer: {e}")
 
     if practice_state:
-        challenge, round_number, claimed_session = practice_state
+        challenge, attempt_number = practice_state
         await handle_practice_answer(
             message,
             challenge,
-            round_number,
-            claimed_session,
+            attempt_number,
         )
         return
 
@@ -642,10 +618,10 @@ async def vocab_cmd(ctx):
 
 @bot.hybrid_command(
     name="practice",
-    description="Start a personalised Vietnamese-to-English translation round.",
+    description="Create one shared Vietnamese-to-English translation exercise thread.",
 )
 async def practice_cmd(ctx):
-    """Start a practice round with either !practice or /practice."""
+    """Create one shared practice thread with either !practice or /practice."""
     if not isinstance(ctx.channel, discord.TextChannel):
         await ctx.send(
             "Hãy chạy `/practice` trong một kênh chữ chính. "
@@ -657,44 +633,35 @@ async def practice_cmd(ctx):
     if interaction:
         await ctx.defer(ephemeral=True)
 
-    discord_id = str(ctx.author.id)
     username = ctx.author.display_name
     thread = None
-    phase = "đọc tiến độ từ cơ sở dữ liệu"
+    phase = "tạo đề bằng AI"
     try:
-        round_number = db.get_next_practice_round(discord_id)
-        history = db.get_recent_practice_attempts(discord_id, limit=5)
-
-        phase = "tạo đề bằng AI"
         challenge = await asyncio.to_thread(
             generate_challenge,
             client_ai,
-            round_number,
-            history,
         )
 
         phase = "gửi đề lên Discord"
         starter = await ctx.channel.send(
             format_thread_prompt(
                 challenge,
-                round_number=round_number,
-                announcement=f"Bài luyện tập của {ctx.author.mention}",
+                announcement=f"Bài luyện tập do {ctx.author.mention} tạo",
             )
         )
 
         phase = "tạo Discord thread"
         thread = await create_practice_thread(
             starter,
-            name=f"Practice - {username} - Round {round_number}",
+            name=f"Practice - {username} - {now_local().strftime('%H%M')}",
             participant=ctx.author,
         )
 
-        phase = "lưu phiên luyện tập vào cơ sở dữ liệu"
-        db.save_practice_session(
-            discord_id=discord_id,
-            username=username,
+        phase = "lưu đề của thread vào cơ sở dữ liệu"
+        db.save_practice_thread_prompt(
+            prompt_key=f"manual:{thread.id}",
+            prompt_message_id=str(starter.id),
             channel_id=str(thread.id),
-            round_number=round_number,
             variant=challenge["variant"],
             level=challenge["level"],
             context=challenge["context"],
